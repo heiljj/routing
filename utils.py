@@ -242,16 +242,27 @@ def enable_global_colbufs(box: iceconfig):
             if "ColBufCtrl" in option:
                 set_bit(tile_data, option[0][0], 1)
 
-# config = route_global_driver((6, 0), "logic_op_tnl_0")
-# config = route_global_receiver(9, (15, 0), (15, 1), 7)
+def write(configs: list[Config], box: iceconfig, fname: str):
+    for option in configs:
+        option.write(box)
 
-# config.extend(route_global_driver((13, 0), "logic_op_top_0"))
-# config.extend(route_global_receiver(11, (17, 0), (17, 1), 3))
+    box.write_file(fname)
+    # this is stupid but i can't find a iceconfig option
+    # comment is required as part of bitstream format
+    with open(fname, "r") as f:
+        contents = f.read()
 
-config = []
-for option in config:
-    option.write(icebox)
+    contents = ".comment generated for multi evaluation\n" + contents
 
-# enable_global_colbufs(icebox)
+    with open(fname, "w") as f:
+        f.write(contents)
 
-icebox.write_file("out_circuit.asc")
+config = route_global_driver((6, 0), "logic_op_tnl_0")
+config.extend(route_global_receiver(9, (15, 0), (15, 1), 7))
+
+config.extend(route_global_driver((13, 0), "logic_op_top_0"))
+config.extend(route_global_receiver(11, (17, 0), (17, 1), 3))
+
+enable_global_colbufs(icebox)
+write(config, icebox, "out_circuit.asc")
+
