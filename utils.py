@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Protocol
+import itertools
 from icestorm.icebox.icebox import iceconfig
 from bit_utils import *
 
@@ -70,19 +71,15 @@ class LUT:
         }
 
         for value, config in zip(self.lout, config_order):
-            if not value:
-                continue
-
             location = bitmap[config]
             t = box.tile(self.x, self.y)
-            set_bit(t, location, 1)
+            set_bit(t, location, value)
 
 @dataclass
 class IO:
     x: int
     y: int
     PIO: int
-
 
     def write(self, box: iceconfig):
         # enable pintype 3 and 4 of IOB_(PIO)
@@ -173,7 +170,8 @@ glb_to_extra_bits = {
 pins_io_config = {
     9: ((15, 0), 0),
     11: ((13, 0), 1),
-    21: ((18, 0), 1)
+    21: ((18, 0), 1),
+    25: ((19, 31), 1)
 }
 
 def route_global_driver(tile: tuple[int, int], logic_net) -> list[Config]:
@@ -201,11 +199,11 @@ def route_global_receiver(pin: int, tile: tuple[int, int], logic_tile: tuple[int
     #TODO
     match (tile[0] - logic_tile[0], tile[1] - logic_tile[1]):
         case -1, -1:
-            direction = "tnl"
+            direction = "tnr"
         case 0, -1:
             direction = "top"
         case 1, -1:
-            direction = "tnr"
+            direction = "tnl"
 
         case -1, 0:
             direction = "lft"
@@ -213,11 +211,11 @@ def route_global_receiver(pin: int, tile: tuple[int, int], logic_tile: tuple[int
             direction = "rgt"
 
         case -1, 1:
-            direction = "bnl"
+            direction = "bnr"
         case 0, 1:
             direction = "bot"
         case 1, 1:
-            direction = "bnr"
+            direction = "bnl"
 
     pio = pins_io_config[pin][1]
 
@@ -233,6 +231,8 @@ def enable_global_colbufs(box: iceconfig):
     tiles.extend(box.ramb_tiles.keys())
     tiles.extend(box.ramt_tiles.keys())
     tiles.extend(box.logic_tiles.keys())
+    tiles.extend(itertools.chain(*(row.keys() for row in box.dsp_tiles)))
+    tiles.extend(box.ipcon_tiles.keys())
 
     for tile in tiles:
         config = box.tile_db(*tile)
@@ -265,4 +265,3 @@ config.extend(route_global_receiver(11, (17, 0), (17, 1), 3))
 
 enable_global_colbufs(icebox)
 write(config, icebox, "out_circuit.asc")
-
