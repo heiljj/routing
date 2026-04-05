@@ -5,9 +5,6 @@ import re
 from enum import Enum, auto
 from icestorm.icebox.icebox import iceconfig
 
-icebox = iceconfig()
-icebox.setup_empty_5k()
-t = 1
 
 class ConfigType:
     buffer = auto()
@@ -28,14 +25,38 @@ class ConfigOption:
 
     def conflicts(self, other: ConfigOption):
         return self.id != other.id
+# routing options
+# CarryInSet
+# ColBufCtrl
+# LC_(0-7) - this needs to be handled separately
 
-class BufferOption(ConfigOption):
-    # TODO
+# manually generate ConfigOptions for each bit
+
+
+# NegClk
+# buffer
+# routing
+
+class CarryInSet(ConfigOption):
+    enable = True
+
+class ColBufCtrl(ConfigOption):
+    net_number = 0
+    enable = True
+
+class LCLut(ConfigOption):
+    cell = 0
+    bit = 0
+    enable = True
+
+class NegClk(ConfigOption):
+    enable = None
+
+class Buffer(ConfigOption):
     src = None
     dst = None
 
-class RoutingOption(ConfigOption):
-    # TODO
+class Routing(ConfigOption):
     net1 = None
     net2 = None
 
@@ -83,11 +104,9 @@ class Tile:
             if random.random() < chance:
                 setting.mutate()
 
-    def write(self, tile: list[str], x, y):
+    def write(self, tile: list[str]):
         for setting in self.settings.values():
             setting.write(tile)
-
-        return f".logic {x} {y}\n" + "\n".join(tile)
 
     def set(self, option: ConfigOption):
         self.settings[option.id].set(option)
@@ -135,22 +154,78 @@ def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tup
     return out
 
 class CF:
+    def __init__(self, valid_tiles: list[tuple[int, int]]):
+        self.valid_tiles = valid_tiles
+
     def valid(self, x, y, option):
+        if option.kind == "buffer" or option.kind == "routing":
+            src = option.data[0]
+            dst = option.data[1]
+
+            if "glb" in src or "glb" in dst:
+                return False
+
+            if "sp" in src:
+                for x, y, netcon in icebox.follow_net((x, y, src)):
+                    if (x, y) not in self.valid_tiles:
+                        return False
+
+            if "sp" in dst:
+                for x, y, netcon in icebox.follow_net((x, y, dst)):
+                    if (x, y) not in self.valid_tiles:
+                        return False
+
+            print(option.data)
+
         return True
 
 class TSF:
     def build(self):
         return ["0" * 54 for _ in range(16)]
 
-tiles = build_tiles([(18, 30)], CF())
-t = tiles[(18, 30)]
+icebox = iceconfig()
+icebox.setup_empty_5k()
+icebox.read_file("out_circuit.asc")
 
-rep = ["0" * 54 for _ in range(16)]
-print(t.write(rep, 3, 3))
+all_tiles = [(x, y) for x in range(15, 20) for y in range(15, 20)]
 
-setting = list(t.settings.values())[0]
-option = setting.enumerate()[0]
+tiles = build_tiles(all_tiles, CF(all_tiles))
+for t in tiles.values():
+    t.mutate(0.5)
 
-print(option)
-t.set(option)
-print(t.write(rep, 3, 3))
+for x, y in tiles:
+    r = icebox.tile(x, y)
+    t = tiles[(x, y)]
+    t.write(r)
+
+import itertools
+icebox.write_file("latest_out_circuit.asc")
+
+# use icebox.follow_net for config parser
+# need logic configs
+
+# routing options
+# CarryInSet
+# ColBufCtrl
+# LC_(0-7) - this needs to be handled separately
+
+# manually generate ConfigOptions for each bit
+
+
+# NegClk
+# buffer
+# routing
+
+class MutationConfig:
+    def __init__(self, tiles: tuple[tuple[int, int]]): ...
+    def enableGlobalNets(self): ...
+    def enableLogicCell(self, num: int): ...
+    def enableLocalSpans(self): ...
+    def enableAllSpans(self): ...
+
+class EvolutionConfig:
+    def __init__(self, x_size: int, y_size: int, genome_locations: tuple[tuple[int, int]]): ...
+    def enableGlobalNets(self): ...
+    def enableLogicCell(self, num: int): ...
+    def enableLocalSpans(self): ...
+    def enableAllSpans(self): ...
