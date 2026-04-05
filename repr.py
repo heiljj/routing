@@ -4,96 +4,125 @@ import random
 import re
 from enum import Enum, auto
 from icestorm.icebox.icebox import iceconfig
+from dataclasses import dataclass
 
 
 class ConfigType:
     buffer = auto()
     routing = auto()
 
+@dataclass
+class ConfigBit:
+    row: int
+    col: int
+
+    def __iter__(self):
+        return iter((self.row, self.col))
+
+    def __hash__(self):
+        return hash((self.row, self.col))
 
 class ConfigOption:
-    def __init__(self, bits: list[str], kind: str, data: list[Any]):
-        # id is same for conflicting settings
-        self.settings = [b if b[0] != "!" else b[1:] for b in bits]
-        self.id = "".join(self.settings)
-        self.values = [True if b[0] != "!" else False for b in bits]
-        self.values_hash = ",".join(str(i) for i in self.values)
-        # buffer, routing
-        self.kind = kind
-        # extra data such as specific nets for a buffer
-        self.data = data
+    # def __init__(self, bits: list[str], kind: str, data: list[Any]):
+    #     # id is same for conflicting settings
+    #     self.settings = [b if b[0] != "!" else b[1:] for b in bits]
+    #     self.id = "".join(self.settings)
+    #     self.values = [True if b[0] != "!" else False for b in bits]
+    #     self.values_hash = ",".join(str(i) for i in self.values)
+    #     # buffer, routing
+    #     self.kind = kind
+    #     # extra data such as specific nets for a buffer
+    #     self.data = data
+    def __init__(self, bits, values):
+        self.bits = bits
+        self.values = values
 
-    def conflicts(self, other: ConfigOption):
-        return self.id != other.id
-# routing options
-# CarryInSet
-# ColBufCtrl
-# LC_(0-7) - this needs to be handled separately
+    def write(self, tile: list[str]):
+        for bit, state in zip(self.bits, self.values):
+            current = list(tile[bit.row])
+            current[bit.col] = "1" if state else "0"
+            tile[bit.row] = "".join(current)
 
-# manually generate ConfigOptions for each bit
+    @property
+    def conflicts(self):
+        return hash((*self.bits,))
 
-
-# NegClk
-# buffer
-# routing
+    def __hash__(self):
+        return hash((*self.bits, *self.values))
 
 class CarryInSet(ConfigOption):
-    enable = True
+    def __init__(self, bit: ConfigBit, enabled: bool):
+        super().__init__([bit], [enabled])
+
+    @property
+    def enabled(self) -> bool:
+        return self.values[0]
 
 class ColBufCtrl(ConfigOption):
-    net_number = 0
-    enable = True
+    def __init__(self, bit: ConfigBit, enabled: bool):
+        super().__init__([bit], [enabled])
+
+    @property
+    def enabled(self) -> bool:
+        return self.values[0]
 
 class LCLut(ConfigOption):
-    cell = 0
-    bit = 0
-    enable = True
+    def __init__(self, cell: int, index: int, bit: ConfigBit, enabled: bool):
+        super().__init__([bit], [enabled])
+        self.cell = cell
+        self.index = index
+
+    @property
+    def enabled(self) -> bool:
+        return self.values[0]
 
 class NegClk(ConfigOption):
-    enable = None
+    def __init__(self, bit: ConfigBit, enabled: bool):
+        super().__init__([bit], [enabled])
+
+    @property
+    def enabled(self) -> bool:
+        return self.values[0]
 
 class Buffer(ConfigOption):
-    src = None
-    dst = None
+    def __init__(self, bits: tuple[ConfigBit], values: tuple[bool], src_net: str, dst_net: str):
+        super().__init__(bits, values)
+        self.src_net = src_net
+        self.dst_net = dst_net
 
 class Routing(ConfigOption):
-    net1 = None
-    net2 = None
+    def __init__(self, bits: tuple[ConfigBit], values: tuple[bool], net1: str, net2: str):
+        super().__init__(bits, values)
+        self.net1 = net1
+        self.net2 = net2
 
-def parse_config_bit(bit: str) -> tuple[int, int]:
+
+def parse_config_bit(bit: str) -> ConfigBit:
     row = re.search(r"B(\d+)", bit).group(1)
     col = re.search(r"\[(\d+)\]", bit).group(1)
-    return (int(row), int(col))
+    return ConfigBit(int(row), int(col))
+
 
 class ConfigSetting:
     def __init__(self, options: set[ConfigOption]):
-        self.options = {option.values_hash: option for option in options}
+        self.options = options
         self.current = None
-
-    def numBits(self):
-        return len(self.options[0].bits)
 
     def enumerate(self) -> list[ConfigOption]:
         return list(self.options.values())
 
     def set(self, option: ConfigOption):
-        if option.values_hash not in self.options:
+        if option not in self.options:
             raise Exception
 
-        self.current = option.values_hash
+        self.current = option
 
     def write(self, tile: list[str]):
         if self.current:
-            option = self.options[self.current]
-            for bit, value in zip(option.settings, option.values):
-                row, col = parse_config_bit(bit)
-
-                current = list(tile[row])
-                current[col] = "1" if value else "0"
-                tile[row] = "".join(current)
+            self.current.write(tile)
 
     def mutate(self):
-        self.current = random.choice(list(self.options.keys()))
+        self.current = random.choice(list(self.options))
 
 class Tile:
     def __init__(self, settings: dict[str, ConfigSetting]):
@@ -109,7 +138,7 @@ class Tile:
             setting.write(tile)
 
     def set(self, option: ConfigOption):
-        self.settings[option.id].set(option)
+        self.settings[option.conflicts].set(option)
 
 class ConfigFilter(Protocol):
     def valid(self, x, y, option: ConfigOption):
@@ -119,13 +148,55 @@ class TileSeedFactory(Protocol):
     def build(self) -> list[str]:
         pass
 
+def parse_tile_dbrow(row: list) -> list[ConfigOption]:
+    bits = row[0]
+    kind = row[1]
+    args = row[2:]
+
+    parsed_bits = []
+    parsed_values = []
+    for bit in bits:
+        if bit[0] == "!":
+            parsed_bits.append(parse_config_bit(bit[1:]))
+            parsed_values.append(False)
+
+        else:
+            parsed_bits.append(parse_config_bit(bit))
+            parsed_values.append(True)
+
+    match kind:
+        case "CarryInSet":
+            return [CarryInSet(parsed_bits[0], parsed_values[0])]
+        case "ColBufCtrl":
+            return [ColBufCtrl(parsed_bits[0], parsed_values[0])]
+        case "NegClk":
+            return [NegClk(parsed_bits[0], parsed_values[0])]
+        case "buffer":
+            return [Buffer(parsed_bits, parsed_values, args[0], args[1])]
+        case "routing":
+            return [Routing(parsed_bits, parsed_values, args[0], args[1])]
+        case "RamConfig":
+            #TODO
+            return []
+        case "RamCascade":
+            #TODO
+            return []
+        case _:
+            index = int(re.search(r"LC_(\d)", kind).group(1))
+            if not 0 <= index <= 7:
+                raise Exception("Bad index")
+
+            values = []
+            for i, bit in enumerate(parsed_bits):
+                values.append(LCLut(index, i, bit, True))
+                values.append(LCLut(index, i, bit, False))
+
+            return values
+
 def build_options(iceconfig_settings: list[list[str]]) -> Generator[ConfigOption]:
     for setting in iceconfig_settings:
-        bits = setting[0]
-        kind = setting[1]
-        data = setting[2:]
-
-        yield ConfigOption(bits, kind, data)
+        for option in parse_tile_dbrow(setting):
+            yield option
 
 # NOTE tile locations are meant to be relative with ConfigFilter
 # perfectly fine to create multiple genomes from the same settings and
@@ -138,10 +209,10 @@ def build_tile(x: int, y: int, cfilter: ConfigFilter) -> Tile:
         if not cfilter.valid(x, y, option):
             continue
 
-        if option.id not in settings:
-            settings[option.id] = set()
+        if option.conflicts not in settings:
+            settings[option.conflicts] = set()
 
-        settings[option.id].add(option)
+        settings[option.conflicts].add(option)
 
     return Tile({setting: ConfigSetting(options) for setting, options in settings.items()})
 
@@ -158,24 +229,24 @@ class CF:
         self.valid_tiles = valid_tiles
 
     def valid(self, x, y, option):
-        if option.kind == "buffer" or option.kind == "routing":
-            src = option.data[0]
-            dst = option.data[1]
+        # if option.kind == "buffer" or option.kind == "routing":
+        #     src = option.data[0]
+        #     dst = option.data[1]
 
-            if "glb" in src or "glb" in dst:
-                return False
+        #     if "glb" in src or "glb" in dst:
+        #         return False
 
-            if "sp" in src:
-                for x, y, netcon in icebox.follow_net((x, y, src)):
-                    if (x, y) not in self.valid_tiles:
-                        return False
+        #     if "sp" in src:
+        #         for x, y, netcon in icebox.follow_net((x, y, src)):
+        #             if (x, y) not in self.valid_tiles:
+        #                 return False
 
-            if "sp" in dst:
-                for x, y, netcon in icebox.follow_net((x, y, dst)):
-                    if (x, y) not in self.valid_tiles:
-                        return False
+        #     if "sp" in dst:
+        #         for x, y, netcon in icebox.follow_net((x, y, dst)):
+        #             if (x, y) not in self.valid_tiles:
+        #                 return False
 
-            print(option.data)
+        #     print(option.data)
 
         return True
 
@@ -198,7 +269,6 @@ for x, y in tiles:
     t = tiles[(x, y)]
     t.write(r)
 
-import itertools
 icebox.write_file("latest_out_circuit.asc")
 
 # use icebox.follow_net for config parser
