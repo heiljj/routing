@@ -96,12 +96,10 @@ class Routing(ConfigOption):
         self.net1 = net1
         self.net2 = net2
 
-
 def parse_config_bit(bit: str) -> ConfigBit:
     row = re.search(r"B(\d+)", bit).group(1)
     col = re.search(r"\[(\d+)\]", bit).group(1)
     return ConfigBit(int(row), int(col))
-
 
 class ConfigSetting:
     def __init__(self, options: set[ConfigOption]):
@@ -124,6 +122,10 @@ class ConfigSetting:
     def mutate(self):
         self.current = random.choice(list(self.options))
 
+    def crossover(self, other: ConfigSetting, chance):
+        if random.random() < chance:
+            self.current = other
+
 class Tile:
     def __init__(self, settings: dict[str, ConfigSetting]):
         self.settings = settings
@@ -139,6 +141,11 @@ class Tile:
 
     def set(self, option: ConfigOption):
         self.settings[option.conflicts].set(option)
+
+    def crossover(self, other: Tile, chance: float):
+        for key in self.settings:
+            if random.random() < chance:
+                self.settings[key].crossover(other.settings[key], chance)
 
 class ConfigFilter(Protocol):
     def valid(self, x, y, option: ConfigOption):
@@ -216,6 +223,22 @@ def build_tile(x: int, y: int, cfilter: ConfigFilter) -> Tile:
 
     return Tile({setting: ConfigSetting(options) for setting, options in settings.items()})
 
+class Genome:
+    def __init__(self, tiles: dict[tuple[int, int], Tile]):
+        self.tiles = tiles
+
+    def mutate(self, chance: float):
+        for tile in self.tiles.values():
+            tile.mutate(chance)
+
+    def crossover(self, other: Genome, chance: float):
+        for location in self.tiles.keys():
+            self.tiles[location].crossover(other.tiles[location], chance)
+
+    def write(self, icebox: iceconfig, x_offset: int, y_offset: int):
+        for x, y in tiles:
+            self.tiles[(x, y)].write(icebox.tile(x + x_offset, y + y_offset))
+
 def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], Tile]:
     out = {}
 
@@ -229,73 +252,51 @@ class CF:
         self.valid_tiles = valid_tiles
 
     def valid(self, x, y, option):
-        # if option.kind == "buffer" or option.kind == "routing":
-        #     src = option.data[0]
-        #     dst = option.data[1]
+        if isinstance(option, Buffer):
+            if "glb" in option.src_net or "glb" in option.dst_net:
+                return False
 
-        #     if "glb" in src or "glb" in dst:
-        #         return False
+            if "sp" in option.src_net and "sp" in option.dst_net:
+                return False
 
-        #     if "sp" in src:
-        #         for x, y, netcon in icebox.follow_net((x, y, src)):
-        #             if (x, y) not in self.valid_tiles:
-        #                 return False
+            if "sp" in option.src_net:
+                for x, y, netcon in icebox.follow_net((x, y, option.src_net)):
+                    if (x, y) not in self.valid_tiles:
+                        return False
 
-        #     if "sp" in dst:
-        #         for x, y, netcon in icebox.follow_net((x, y, dst)):
-        #             if (x, y) not in self.valid_tiles:
-        #                 return False
+            if "sp" in option.dst_net:
+                for x, y, netcon in icebox.follow_net((x, y, option.dst_net)):
+                    if (x, y) not in self.valid_tiles:
+                        return False
 
-        #     print(option.data)
+            return True
 
-        return True
+        elif isinstance(option, Routing):
+            # I think this should probably be disabled in most cases?
+            # Having this enabled pretty much means that all the spans will
+            # be connected I think
+            return False
 
-class TSF:
-    def build(self):
-        return ["0" * 54 for _ in range(16)]
+        elif isinstance(option, LCLut):
+            return True
+
+        return False
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
 icebox.read_file("out_circuit.asc")
 
-all_tiles = [(x, y) for x in range(15, 20) for y in range(15, 20)]
+all_tiles = [(x, y) for x in range(16, 20) for y in range(16, 20)]
 
 tiles = build_tiles(all_tiles, CF(all_tiles))
-for t in tiles.values():
-    t.mutate(0.5)
+tiles2 = build_tiles(all_tiles, CF(all_tiles))
 
-for x, y in tiles:
-    r = icebox.tile(x, y)
-    t = tiles[(x, y)]
-    t.write(r)
+genome = Genome(tiles)
+genome2 = Genome(tiles2)
 
+genome.mutate(0.5)
+genome2.mutate(0.5)
+genome.crossover(genome2, 0.5)
+
+genome.write(icebox, -2, 2)
 icebox.write_file("latest_out_circuit.asc")
-
-# use icebox.follow_net for config parser
-# need logic configs
-
-# routing options
-# CarryInSet
-# ColBufCtrl
-# LC_(0-7) - this needs to be handled separately
-
-# manually generate ConfigOptions for each bit
-
-
-# NegClk
-# buffer
-# routing
-
-class MutationConfig:
-    def __init__(self, tiles: tuple[tuple[int, int]]): ...
-    def enableGlobalNets(self): ...
-    def enableLogicCell(self, num: int): ...
-    def enableLocalSpans(self): ...
-    def enableAllSpans(self): ...
-
-class EvolutionConfig:
-    def __init__(self, x_size: int, y_size: int, genome_locations: tuple[tuple[int, int]]): ...
-    def enableGlobalNets(self): ...
-    def enableLogicCell(self, num: int): ...
-    def enableLocalSpans(self): ...
-    def enableAllSpans(self): ...
