@@ -36,8 +36,6 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
         next_paths = []
         for path in search_paths:
             for x, y, net, in icebox.follow_net(path[-1][:3]):
-                if (x, y) in disallowed_tiles or net in disallowed_nets:
-                    continue
 
                 if (x, y, net, None) in visited_locations:
                     continue
@@ -46,6 +44,9 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
 
                 if target_tile == (x, y) and target_net in [net, None]:
                     return path + [(x, y, net, None)]
+
+                if (x, y) in disallowed_tiles or net in disallowed_nets:
+                    continue
 
                 next_paths.append(path + [(x, y, net, None)])
 
@@ -170,7 +171,7 @@ def configure_seed(configs: list[SeedConfig], file: str):
     icebox.setup_empty_5k()
 
     for config in configs:
-        r_tiles, r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox, disallowed_nets=restricted_tiles)
+        r_tiles, r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox, disallowed_tiles=config.genome)
         restricted_tiles = restricted_tiles.union(r_tiles)
 
     icebox.write_file(file)
@@ -180,9 +181,10 @@ def configure_seed(configs: list[SeedConfig], file: str):
         contents = f.read()
         f.write(".comment generated seed file\n" + contents)
 
-genome_tiles = {(x, y) for x in range(1, 6) for y in range(3, 9)}
-config = SeedConfig(27, (3, 8), None, genome_tiles)
+genome_tiles = {(x, y) for x in range(9, 25) for y in range(14, 26)}
+config = SeedConfig(27, (9, 25), None, genome_tiles)
+configure_seed([config], "test_seed.asc")
 
-genome_tiles2 = {(x, y) for x in range(13, 18) for y in range(13, 19)}
-config2 = SeedConfig(25, (13, 18), None, genome_tiles)
-configure_seed([config, config2], "test_seed.asc")
+# genome_tiles2 = {(x, y) for x in range(13, 18) for y in range(13, 19)}
+# config2 = SeedConfig(25, (13, 18), None, genome_tiles)
+# configure_seed([config, config2], "test_seed.asc")
