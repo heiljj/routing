@@ -3,6 +3,7 @@ The initial network starts from a logic cell output."""
 import itertools
 import functools
 from icestorm.icebox.icebox import iceconfig
+from dataclasses import dataclass
 from repr import ConfigOption, parse_config_bit
 
 icebox = iceconfig()
@@ -12,14 +13,10 @@ icebox.setup_empty_5k()
 def generate_lookup(tile: tuple[int, int]) -> dict[str, list[str]]:
     """Creates a lookup table of potential local network connections in a tile."""
     nets = icebox.tile_db(*tile)
-    # bidirectional
     routing_nets = list(filter(lambda x : x[1] == "routing", nets))
-    # routing2_nets = [(x[0], x[1], x[3], x[2]) for x in routing_nets]
     buffer_nets = list(filter(lambda x : x[1] == "buffer", nets))
 
-    # nets = list(routing_nets) + buffer_net + routing2_nets
     nets = list(routing_nets) + buffer_nets
-    # nets = list(routing_nets) + buffer_nets
     # src, dst, config
     nets = [(x[2], x[3], tuple(x[0])) for x in nets]
     nets = sorted(nets, key=lambda x : x[0])
@@ -36,7 +33,6 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
     visited_locations = set(search_paths[0][0])
 
     for i in range(depth):
-        print(i)
         next_paths = []
         for path in search_paths:
             for x, y, net, in icebox.follow_net(path[-1][:3]):
@@ -69,6 +65,46 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
 
     return None
 
+def get_config_option(tile: tuple[int, int], kind: str, arg: str):
+    """Look up config bits based on config option type and first argument."""
+    for row in icebox.tile_db(*tile):
+        if row[1] == kind:
+            if row[2] == arg:
+                return row[0]
+
+def write_config_option(tile: tuple[int, int], icebox: iceconfig, bits: list[str]):
+    """Writes icestorm formatted bitstring to iceconfig tile."""
+    values = [x[0] != "!" for x in bits]
+    locations = [parse_config_bit(x) if x[0] != "!" else parse_config_bit(x[1:]) for x in bits]
+    ConfigOption(locations, values).write(icebox.tile(*tile))
+
+def configure_io(io_pin: int, icebox: iceconfig) -> tuple[tuple[int, int], str]:
+    """Writes io pad configuration, returns io tile location and out net."""
+    pad_lookup = {row[0]: row[1:] for row in icebox.pinloc_db()}
+    x, y, pad = pad_lookup[str(io_pin)]
+
+    ie_lookup = {row[:3]: row[3:] for row in icebox.ieren_db()}
+    ren_x, ren_y, ren_pad = ie_lookup[(x, y, pad)]
+
+    ren = f"REN_{ren_pad}"
+    bits = get_config_option((ren_x, ren_y), "IoCtrl", ren)
+    write_config_option((ren_x, ren_y), icebox, bits)
+
+    if pad == 1:
+        cf_bit = "cf_bit_39"
+    else:
+        cf_bit = "cf_bit_35"
+
+    bits = get_config_option((x, y), "IoCtrl", cf_bit)
+    write_config_option((x, y), icebox, bits)
+
+    iob = f"IOB_{pad}"
+    for option in ["PINTYPE_0", "PINTYPE_3", "PINTYPE_4"]:
+        bits = get_config_option((ren_x, ren_y), iob, option)
+        write_config_option((ren_x, ren_y), icebox, bits)
+
+    return ((x, y), f"io_{pad}/D_OUT_0")
+
 def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], tuple[str]]]:
     """Creates possible combinations of span -> local -> dout."""
     paths = []
@@ -86,7 +122,9 @@ def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], tuple[s
 
     return paths
 
-def route_io(io_tile: tuple[int, int], pin_out: str, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_tiles: set[tuple[int, int]]=set(), disallowed_nets: dict[tuple[int, int], set[str]]=set()):
+def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_tiles: set[tuple[int, int]]=set(), disallowed_nets: dict[tuple[int, int], set[str]]=set()):
+    # TODO need to configure pin, change pin out to actual pin
+    io_tile, pin_out = configure_io(pin, icebox)
     nets = prepare_io(io_tile, pin_out)
 
     for io_path, io_conf in nets:
@@ -94,7 +132,12 @@ def route_io(io_tile: tuple[int, int], pin_out: str, dst_tile: tuple[int, int], 
         if not path:
             continue
 
-        for x, y, _, bits in path:
+        used_tiles = set()
+        # TODO need to translate span names
+        used_nets = {}
+
+        for x, y, net, bits in path:
+            used_tiles.add((x, y))
             if not bits:
                 continue
             values = [x[0] != "!" for x in bits]
@@ -108,9 +151,38 @@ def route_io(io_tile: tuple[int, int], pin_out: str, dst_tile: tuple[int, int], 
             option = ConfigOption(locations, values)
             option.write(icebox.tile(*io_tile))
 
-        return
+
+        return used_tiles, used_nets
 
     raise Exception
 
-route_io((12, 31), "io_1/D_OUT_1", (24, 0), "span4_vert_47", icebox)
-icebox.write_file("spantest.asc")
+@dataclass
+class SeedConfig:
+    pin: int
+    output_tile: tuple[int, int]
+    output_net: str | None
+    genome: set[tuple[int, int]]
+
+def configure_seed(configs: list[SeedConfig], file: str):
+    restricted_tiles = set()
+
+    icebox = iceconfig()
+    icebox.setup_empty_5k()
+
+    for config in configs:
+        r_tiles, r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox, disallowed_nets=restricted_tiles)
+        restricted_tiles = restricted_tiles.union(r_tiles)
+
+    icebox.write_file(file)
+
+    # part of bitstream format
+    with open(file, "r+") as f:
+        contents = f.read()
+        f.write(".comment generated seed file\n" + contents)
+
+genome_tiles = {(x, y) for x in range(1, 6) for y in range(3, 9)}
+config = SeedConfig(27, (3, 8), None, genome_tiles)
+
+genome_tiles2 = {(x, y) for x in range(13, 18) for y in range(13, 19)}
+config2 = SeedConfig(25, (13, 18), None, genome_tiles)
+configure_seed([config, config2], "test_seed.asc")
