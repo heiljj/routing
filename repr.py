@@ -6,6 +6,8 @@ from enum import Enum, auto
 from icestorm.icebox.icebox import iceconfig
 from dataclasses import dataclass
 
+icebox = iceconfig()
+icebox.setup_empty_5k()
 
 class ConfigType:
     buffer = auto()
@@ -23,17 +25,7 @@ class ConfigBit:
         return hash((self.row, self.col))
 
 class ConfigOption:
-    # def __init__(self, bits: list[str], kind: str, data: list[Any]):
-    #     # id is same for conflicting settings
-    #     self.settings = [b if b[0] != "!" else b[1:] for b in bits]
-    #     self.id = "".join(self.settings)
-    #     self.values = [True if b[0] != "!" else False for b in bits]
-    #     self.values_hash = ",".join(str(i) for i in self.values)
-    #     # buffer, routing
-    #     self.kind = kind
-    #     # extra data such as specific nets for a buffer
-    #     self.data = data
-    def __init__(self, bits, values):
+    def __init__(self, bits: list[str], values: list[bool]):
         self.bits = bits
         self.values = values
 
@@ -188,6 +180,12 @@ def parse_tile_dbrow(row: list) -> list[ConfigOption]:
         case "RamCascade":
             #TODO
             return []
+        case "Cascade":
+            #TODO
+            return []
+        case "IpConfig":
+            #TODO
+            return []
         case _:
             index = int(re.search(r"LC_(\d)", kind).group(1))
             if not 0 <= index <= 7:
@@ -236,7 +234,7 @@ class Genome:
             self.tiles[location].crossover(other.tiles[location], chance)
 
     def write(self, icebox: iceconfig, x_offset: int, y_offset: int):
-        for x, y in tiles:
+        for x, y in self.tiles:
             self.tiles[(x, y)].write(icebox.tile(x + x_offset, y + y_offset))
 
 def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], Tile]:
@@ -259,15 +257,27 @@ class CF:
             if "sp" in option.src_net and "sp" in option.dst_net:
                 return False
 
+            nets = []
+
             if "sp" in option.src_net:
-                for x, y, netcon in icebox.follow_net((x, y, option.src_net)):
+                nets.append((x, y, option.src_net))
+
+            if "sp" in option.dst_net:
+                nets.append((x, y, option.dst_net))
+
+            found = set(nets)
+
+            while nets:
+                new_nets = icebox.follow_net(nets.pop())
+
+                for net in new_nets:
+                    x, y, _ = net
                     if (x, y) not in self.valid_tiles:
                         return False
 
-            if "sp" in option.dst_net:
-                for x, y, netcon in icebox.follow_net((x, y, option.dst_net)):
-                    if (x, y) not in self.valid_tiles:
-                        return False
+                    if net not in found:
+                        nets.append(net)
+                        found.add(net)
 
             return True
 
@@ -282,21 +292,12 @@ class CF:
 
         return False
 
-icebox = iceconfig()
-icebox.setup_empty_5k()
 icebox.read_file("out_circuit.asc")
 
-all_tiles = [(x, y) for x in range(16, 20) for y in range(16, 20)]
-
+# import time
+all_tiles = [(x, y) for x in range(20, 25) for y in range(15, 20) if (x, y) in icebox.logic_tiles]
 tiles = build_tiles(all_tiles, CF(all_tiles))
-tiles2 = build_tiles(all_tiles, CF(all_tiles))
-
 genome = Genome(tiles)
-genome2 = Genome(tiles2)
-
 genome.mutate(0.5)
-genome2.mutate(0.5)
-genome.crossover(genome2, 0.5)
-
-genome.write(icebox, -2, 2)
+genome.write(icebox, 0, 0)
 icebox.write_file("latest_out_circuit.asc")
