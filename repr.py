@@ -94,9 +94,9 @@ def parse_config_bit(bit: str) -> ConfigBit:
     return ConfigBit(int(row), int(col))
 
 class ConfigSetting:
-    def __init__(self, options: set[ConfigOption]):
+    def __init__(self, options: set[ConfigOption], current=None):
         self.options = options
-        self.current = None
+        self.current = current
 
     def enumerate(self) -> list[ConfigOption]:
         return list(self.options.values())
@@ -118,6 +118,9 @@ class ConfigSetting:
         if random.random() < chance:
             self.current = other
 
+    def clone(self) -> ConfigSetting:
+        return ConfigSetting(self.options, current=self.current)
+
 class Tile:
     def __init__(self, settings: dict[str, ConfigSetting]):
         self.settings = settings
@@ -138,6 +141,10 @@ class Tile:
         for key in self.settings:
             if random.random() < chance:
                 self.settings[key].crossover(other.settings[key], chance)
+
+    def clone(self) -> Tile:
+        new_settings = {k: v.clone() for k, v in self.settings.items()}
+        return Tile(new_settings)
 
 class ConfigFilter(Protocol):
     def valid(self, x, y, option: ConfigOption):
@@ -237,6 +244,11 @@ class Genome:
         for x, y in self.tiles:
             self.tiles[(x, y)].write(icebox.tile(x + x_offset, y + y_offset))
 
+    def clone(self) -> Genome:
+        """Creates new genome out of the existing tile set with shared ConfigOption references."""
+        new_tiles = {k: v.clone() for k, v in self.tiles.items()}
+        return Genome(new_tiles)
+
 def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], Tile]:
     out = {}
 
@@ -245,16 +257,28 @@ def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tup
 
     return out
 
+offset_map = {
+    "tnr": (1, 1),
+    "top": (0, 1),
+    "tnl": (-1, 1),
+    "lft": (-1, 0),
+    "rgt": (1, 0),
+    "bnr": (1, -1),
+    "bot": (0, -1),
+    "bnl": (-1, -1)
+}
+
 class CF:
-    def __init__(self, valid_tiles: list[tuple[int, int]]):
+    def __init__(self, valid_tiles: list[tuple[int, int]], pin_tiles: list[tuple[int, int]]):
         self.valid_tiles = valid_tiles
+        self.pin_tiles = pin_tiles
 
     def valid(self, x, y, option):
         if isinstance(option, Buffer):
             if "glb" in option.src_net or "glb" in option.dst_net:
                 return False
 
-            if "sp" in option.src_net and "sp" in option.dst_net:
+            if "sp" in option.src_net or "sp" in option.dst_net:
                 return False
 
             nets = []
@@ -264,6 +288,16 @@ class CF:
 
             if "sp" in option.dst_net:
                 nets.append((x, y, option.dst_net))
+
+            if "neigh" in option.src_net or "logic" in option.src_net:
+                direction = re.search(r"op_(.*)_\d", option.src_net).group(1)
+
+                offset = offset_map[direction]
+                if (x + offset[0], y + offset[1]) not in self.valid_tiles:
+                    return False
+
+            if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
+                return False
 
             found = set(nets)
 
@@ -292,12 +326,27 @@ class CF:
 
         return False
 
-icebox.read_file("out_circuit.asc")
+def create_population(reference_tile: tuple[int, int], x_size: int, y_size: int, amount: int) -> list[Genome]:
+    locations = [(x, y) for x in range(reference_tile[0], reference_tile[0] + x_size) for y in range(reference_tile[1], reference_tile[1] + y_size) if (x, y) in icebox.logic_tiles]
+    tiles = build_tiles(locations, CF(locations))
+    genome = Genome(tiles)
+    return [genome.clone() for _ in range(amount)]
 
-# import time
-all_tiles = [(x, y) for x in range(20, 25) for y in range(15, 20) if (x, y) in icebox.logic_tiles]
-tiles = build_tiles(all_tiles, CF(all_tiles))
-genome = Genome(tiles)
-genome.mutate(0.5)
-genome.write(icebox, 0, 0)
-icebox.write_file("latest_out_circuit.asc")
+class GenomeWriter:
+    def __init__(self, tile_to_pin: dict[tuple[int, int], int]):
+        self.tile_to_pin = tile_to_pin
+
+    def write(self, seed: str, fpath: str, genomes: list[Genome], reference_tile: tuple[str, str]) -> dict[Genome, int]:
+        """Writes genomes to circuit file. Each genome is translated from the starting reference
+        tile to one included in the tile_to_pin map. Returns mapping of genome to io pin."""
+        icebox = iceconfig()
+        icebox.read_file(seed)
+        out = {}
+        for genome, target_tile in zip(genomes, self.tile_to_pin.keys()):
+            out[genome] = self.tile_to_pin[target_tile]
+            genome.write(icebox, target_tile[0] - reference_tile[0], target_tile[1] - reference_tile[1])
+
+        icebox.write_file(fpath)
+        with open(fpath, "r+") as f:
+            contents = f.read()
+            f.write(".comment generated seed file\n" + contents)

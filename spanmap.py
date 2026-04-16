@@ -49,6 +49,12 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
                 if target_tile == (x, y) and target_net in [net, None]:
                     return path + [(x, y, net, None)]
 
+                if target_tile == (x, y):
+                    internal_lookup = generate_lookup((x, y))
+                    for buffer, config in internal_lookup.get(net, []):
+                        if buffer == target_net:
+                            return path + [(x, y, net, None), (x, y, buffer, config)]
+
                 glb_netname = translate_netname(x, y, icebox.max_x, icebox.max_y, net)
                 if glb_netname in disallowed_nets:
                     continue
@@ -178,9 +184,8 @@ def configure_seed(configs: list[SeedConfig], file: str):
     icebox.setup_empty_5k()
 
     for config in configs:
-        new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox, disallowed_tiles=config.genome)
+        new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox)
         r_nets = r_nets.union(new_r_nets)
-        print(r_nets)
 
     icebox.write_file(file)
 
@@ -197,13 +202,34 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 
 # genome_tiles = {(x, y) for x in range(9, 25) for y in range(14, 26)}
 # config = SeedConfig(27, (9, 25), None, genome_tiles)
-configs = [configure(25, (1, 1), 4, 4),
-           configure(21, (16, 16), 4, 4),
-           configure(9, (16, 16), 4, 4),
-           configure(27, (20, 20), 4, 4)]
+# configs = [configure(25, (1, 1), 4, 4),
+#            configure(21, (16, 16), 4, 4),
+#            configure(9, (16, 16), 4, 4),
+#            configure(27, (20, 20), 4, 4)]
 
-configure_seed(configs, "test_seed.asc")
+# configure_seed(configs, "test_seed.asc")
 
 # genome_tiles2 = {(x, y) for x in range(13, 18) for y in range(13, 19)}
 # config2 = SeedConfig(25, (13, 18), None, genome_tiles)
 # configure_seed([config, config2], "test_seed.asc")
+
+from repr import Genome, build_tiles, CF, GenomeWriter
+xs = 4
+ys = 29
+target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
+pins = [9, 11, 25, 27]
+
+writer = GenomeWriter(dict(zip(target_tiles, pins)))
+
+# configs = [configure(pin, tile, xs, ys, net="local_g0_0") for pin, tile in zip(pins, target_tiles)]
+# configure_seed(configs, "test_seed.asc")
+
+all_tiles = [(x, y) for x in range(1, 6) for y in range(1, 31) if (x, y) in icebox.logic_tiles]
+built = build_tiles(all_tiles, CF(all_tiles, [(1, 30)]))
+starting_genome = Genome(built)
+
+genomes = [starting_genome.clone() for _ in range(len(pins))]
+for genome in genomes:
+    genome.mutate(0.5)
+
+writer.write("test_seed.asc", "test_latest_output.asc", genomes, (1, 30))
