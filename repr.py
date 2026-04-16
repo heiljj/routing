@@ -328,7 +328,7 @@ class CF:
 
 def create_population(reference_tile: tuple[int, int], x_size: int, y_size: int, amount: int) -> list[Genome]:
     locations = [(x, y) for x in range(reference_tile[0], reference_tile[0] + x_size) for y in range(reference_tile[1], reference_tile[1] + y_size) if (x, y) in icebox.logic_tiles]
-    tiles = build_tiles(locations, CF(locations))
+    tiles = build_tiles(locations, CF(locations, [reference_tile]))
     genome = Genome(tiles)
     return [genome.clone() for _ in range(amount)]
 
