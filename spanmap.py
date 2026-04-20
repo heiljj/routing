@@ -4,7 +4,7 @@ import itertools
 import functools
 from icestorm.icebox.icebox import iceconfig
 from dataclasses import dataclass
-from repr import ConfigOption, parse_config_bit
+from repr import ConfigOption, parse_config_bit, ConfigBit
 from icestorm.icebox.icebox_asc2hlc import translate_netname
 from icestorm.icebox.icebox_hlc2asc import untranslate_netname
 
@@ -12,7 +12,7 @@ icebox = iceconfig()
 icebox.setup_empty_5k()
 
 @functools.cache
-def generate_lookup(tile: tuple[int, int]) -> dict[str, list[str]]:
+def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, list[str]]:
     """Creates a lookup table of potential local network connections in a tile."""
     nets = icebox.tile_db(*tile)
     routing_nets = list(filter(lambda x : x[1] == "routing", nets))
@@ -20,13 +20,21 @@ def generate_lookup(tile: tuple[int, int]) -> dict[str, list[str]]:
 
     nets = list(routing_nets) + buffer_nets
     # src, dst, config
-    nets = [(x[2], x[3], tuple(x[0])) for x in nets]
+    # TODO change
+    if reverse:
+        nets = [(x[3], x[2], tuple(x[0])) for x in nets]
+    else:
+        nets = [(x[2], x[3], tuple(x[0])) for x in nets]
+
     nets = sorted(nets, key=lambda x : x[0])
 
     # src -> dst, bitconfig
     return {k: ([x[1:] for x in i]) for k, i in itertools.groupby(nets, key=lambda x : x[0])}
 
-def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: str, disallowed_nets: set[str], depth=100, target_net=None) -> list[tuple[int, int, str]] | None:
+# TODO this better
+D_TILES = set((x, y) for x in [0, 25] for y in range(1, 31))
+
+def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: str, disallowed_nets: set[str], depth=100, target_net=None, disallowed_tiles: set[tuple[int, int]]=D_TILES) -> list[tuple[int, int, str]] | None:
     """Route span in start tile to span in target tile using only span to span connections. Ignores disallowed nets and nets crossing into
     disallowed tiles. Returns path of connections as [(x, y, net_name)], where net_name is named relative to the previous entry
     (the first entry is named relative to the starting tile).
@@ -37,11 +45,15 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
     visited_locations = set(search_paths[0][0])
 
     for i in range(depth):
+        print(i)
         next_paths = []
         for path in search_paths:
             for x, y, net, in icebox.follow_net(path[-1][:3]):
 
                 if (x, y, net, None) in visited_locations:
+                    continue
+
+                if (x, y) in disallowed_tiles:
                     continue
 
                 visited_locations.add((x, y, net, None))
@@ -50,7 +62,7 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
                     return path + [(x, y, net, None)]
 
                 if target_tile == (x, y):
-                    internal_lookup = generate_lookup((x, y))
+                    internal_lookup = generate_lookup((x, y), reverse=True)
                     for buffer, config in internal_lookup.get(net, []):
                         if buffer == target_net:
                             return path + [(x, y, net, None), (x, y, buffer, config)]
@@ -62,9 +74,12 @@ def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: st
                 next_paths.append(path + [(x, y, net, None)])
 
             x, y, net, _ = path[-1]
-            internal_lookup = generate_lookup((x, y))
+            internal_lookup = generate_lookup((x, y), reverse=True)
             for buffer, config in internal_lookup.get(net, []):
                 if (x, y, buffer, config) in visited_locations:
+                    continue
+
+                if (x, y) in disallowed_tiles:
                     continue
 
                 visited_locations.add((x, y, buffer, config))
@@ -187,11 +202,16 @@ def configure_seed(configs: list[SeedConfig], file: str):
         new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox)
         r_nets = r_nets.union(new_r_nets)
 
+        # TODO this better, enables lutff/out -> span connection
+        option = ConfigOption([ConfigBit(0, 48)], [True])
+        option.write(icebox.tile(*config.output_tile))
+
     icebox.write_file(file)
 
     # part of bitstream format
-    with open(file, "r+") as f:
+    with open(file, "r") as f:
         contents = f.read()
+    with open(file, "w") as f:
         f.write(".comment generated seed file\n" + contents)
 
 def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> SeedConfig:
@@ -200,8 +220,6 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 
 
 
-# genome_tiles = {(x, y) for x in range(9, 25) for y in range(14, 26)}
-# config = SeedConfig(27, (9, 25), None, genome_tiles)
 # configs = [configure(25, (1, 1), 4, 4),
 #            configure(21, (16, 16), 4, 4),
 #            configure(9, (16, 16), 4, 4),
@@ -211,25 +229,28 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 
 # genome_tiles2 = {(x, y) for x in range(13, 18) for y in range(13, 19)}
 # config2 = SeedConfig(25, (13, 18), None, genome_tiles)
-# configure_seed([config, config2], "test_seed.asc")
+# configure_seed(configs, "test_seed.asc")
 
 from repr import Genome, build_tiles, CF, GenomeWriter
-xs = 4
-ys = 29
-target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
+# xs = 4
+# ys = 29
+# target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
+# pins = [9, 11, 25, 27]
+target_tiles = [(8, 19), (8, 19), (7, 14), (7, 14)]
 pins = [9, 11, 25, 27]
 
 writer = GenomeWriter(dict(zip(target_tiles, pins)))
 
-# configs = [configure(pin, tile, xs, ys, net="local_g0_0") for pin, tile in zip(pins, target_tiles)]
-# configure_seed(configs, "test_seed.asc")
+configs = [configure(pin, tile, 7, 10, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
+configure_seed([configs[3]], "test_seed.asc")
 
-all_tiles = [(x, y) for x in range(1, 6) for y in range(1, 31) if (x, y) in icebox.logic_tiles]
-built = build_tiles(all_tiles, CF(all_tiles, [(1, 30)]))
+all_tiles = [(x, y) for x in range(8, 16) for y in range(19, 25) if (x, y) in icebox.logic_tiles]
+built = build_tiles(all_tiles, CF(all_tiles, [(8, 19)]))
 starting_genome = Genome(built)
 
-genomes = [starting_genome.clone() for _ in range(len(pins))]
-for genome in genomes:
-    genome.mutate(0.5)
+# for i in range(50):
+#     genomes = [starting_genome.clone() for _ in range(len(pins))]
+#     for genome in genomes:
+#         genome.mutate(0.5)
 
-writer.write("test_seed.asc", "test_latest_output.asc", genomes, (1, 30))
+#     writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, (8, 19))
