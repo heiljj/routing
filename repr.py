@@ -116,7 +116,7 @@ class ConfigSetting:
 
     def crossover(self, other: ConfigSetting, chance):
         if random.random() < chance:
-            self.current = other
+            self.current = other.current
 
     def clone(self) -> ConfigSetting:
         return ConfigSetting(self.options, current=self.current)
@@ -278,7 +278,8 @@ class CF:
             if "glb" in option.src_net or "glb" in option.dst_net:
                 return False
 
-            if "sp" in option.src_net or "sp" in option.dst_net:
+            # TODO glb
+            if "sp" in option.src_net and "sp" in option.dst_net:
                 return False
 
             nets = []
@@ -296,8 +297,8 @@ class CF:
                 if (x + offset[0], y + offset[1]) not in self.valid_tiles:
                     return False
 
-            if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
-                return False
+            # if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
+            #     return False
 
             found = set(nets)
 
@@ -347,6 +348,7 @@ class GenomeWriter:
             genome.write(icebox, target_tile[0] - reference_tile[0], target_tile[1] - reference_tile[1])
 
         icebox.write_file(fpath)
-        with open(fpath, "r+") as f:
+        with open(fpath, "r") as f:
             contents = f.read()
+        with open(fpath, "w") as f:
             f.write(".comment generated seed file\n" + contents)
