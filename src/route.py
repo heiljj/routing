@@ -2,17 +2,19 @@
 The initial network starts from a logic cell output."""
 import itertools
 import functools
-from icestorm.icebox.icebox import iceconfig
 from dataclasses import dataclass
-from repr import ConfigOption, parse_config_bit, ConfigBit
 from icebox_asc2hlc import translate_netname
-from icebox_hlc2asc import untranslate_netname
+from icebox import iceconfig
+from genome import ConfigOption, parse_config_bit, ConfigBit, bits_to_option
+
+IPCONF_TILES = set((x, y) for x in [0, 25] for y in range(1, 31))
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
 
+
 @functools.cache
-def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, list[str]]:
+def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, tuple[str, ConfigOption]]:
     """Creates a lookup table of potential local network connections in a tile."""
     nets = icebox.tile_db(*tile)
     routing_nets = list(filter(lambda x : x[1] == "routing", nets))
@@ -26,71 +28,70 @@ def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, list[str]
     else:
         nets = [(x[2], x[3], tuple(x[0])) for x in nets]
 
+    for i in range(len(nets)):
+        nets[i] = (nets[i][0], nets[i][1], bits_to_option(nets[i][2]))
+
     nets = sorted(nets, key=lambda x : x[0])
 
     # src -> dst, bitconfig
     return {k: ([x[1:] for x in i]) for k, i in itertools.groupby(nets, key=lambda x : x[0])}
 
-# TODO this better
-D_TILES = set((x, y) for x in [0, 25] for y in range(1, 31))
+# TODO might be able to use ipcon tiles, need to confirm
+class Router:
+    def __init__(self, start_options: list[tuple[int, int, str]], target_net: tuple[int, int, str], disallowed_nets: set[str]=set(), disallowed_tiles: set[tuple[int, int]]=IPCONF_TILES, depth: int=100):
+        self.paths = [[(*option, None)] for option in start_options]
+        self.target = target_net
+        self.disallowed_nets = disallowed_nets
+        self.disallowed_tiles = disallowed_tiles
+        self.depth = depth
+        self.visited_nets = set()
 
-def route(target_tile: tuple[int, int], start_tile: tuple[int, int], src_net: str, disallowed_nets: set[str], depth=100, target_net=None, disallowed_tiles: set[tuple[int, int]]=D_TILES) -> list[tuple[int, int, str]] | None:
-    """Route span in start tile to span in target tile using only span to span connections. Ignores disallowed nets and nets crossing into
-    disallowed tiles. Returns path of connections as [(x, y, net_name)], where net_name is named relative to the previous entry
-    (the first entry is named relative to the starting tile).
-    NOTE: disallowed nets can only contain spans and uses the global naming scheme rather than the local one. Local
-    span names can be converted using asc2hlc.translate_netname."""
-    search_paths = [[(*start_tile, src_net, None)]]
+    def _connection_valid(self, x: int, y: int, net: str):
+        """Whether a connection fits tile/net constraints"""
+        if (x, y) in self.disallowed_tiles or (x, y, net) in self.visited_nets:
+            return False
 
-    visited_locations = set(search_paths[0][0])
+        glb_netname = translate_netname(x, y, icebox.max_x, icebox.max_y, net)
 
-    for i in range(depth):
-        print(i)
-        next_paths = []
-        for path in search_paths:
-            for x, y, net, in icebox.follow_net(path[-1][:3]):
+        return glb_netname not in self.disallowed_nets and glb_netname not in self.visited_nets
 
-                if (x, y, net, None) in visited_locations:
-                    continue
+    def _path_if_valid(self, path, x, y, net, config):
+        """Adds path to queue if new connection is valid"""
+        if self._connection_valid(x, y, net):
+            self.visited_nets.add((x, y, net))
+            self.paths.append(path + [(x, y, net, config)])
 
-                if (x, y) in disallowed_tiles:
-                    continue
+    def _follow_path(self, path: list[tuple[int, int, str, ConfigOption | None]]):
+        """Explores next options for a path, returns whether path is already complete"""
+        x, y, net, bits = path[-1]
 
-                visited_locations.add((x, y, net, None))
+        if (x, y, net) == self.target:
+            return True
 
-                if target_tile == (x, y) and target_net in [net, None]:
-                    return path + [(x, y, net, None)]
+        for new_x, new_y, new_net in icebox.follow_net((x, y, net)):
+            self._path_if_valid(path, new_x, new_y, new_net, None)
 
-                if target_tile == (x, y):
-                    internal_lookup = generate_lookup((x, y), reverse=True)
-                    for buffer, config in internal_lookup.get(net, []):
-                        if buffer == target_net:
-                            return path + [(x, y, net, None), (x, y, buffer, config)]
+        lookup = generate_lookup((x, y), reverse=True)
+        for buffer, config in lookup.get(net, []):
+            self._path_if_valid(path, x, y, buffer, config)
 
-                glb_netname = translate_netname(x, y, icebox.max_x, icebox.max_y, net)
-                if glb_netname in disallowed_nets:
-                    continue
+        return False
 
-                next_paths.append(path + [(x, y, net, None)])
+    def route(self):
+        for i in range(self.depth):
+            if not self.paths:
+                break
+            print(f"depth: {i}, paths: {len(self.paths)}")
+            old_paths = self.paths
+            self.paths = []
 
-            x, y, net, _ = path[-1]
-            internal_lookup = generate_lookup((x, y), reverse=True)
-            for buffer, config in internal_lookup.get(net, []):
-                if (x, y, buffer, config) in visited_locations:
-                    continue
+            while old_paths:
+                path = old_paths.pop()
+                if self._follow_path(path):
+                    return path
 
-                if (x, y) in disallowed_tiles:
-                    continue
+        return False
 
-                visited_locations.add((x, y, buffer, config))
-
-                next_paths.append(path + [(x, y, buffer, config)])
-
-        search_paths = next_paths
-        if not search_paths:
-            break
-
-    return None
 
 def get_config_option(tile: tuple[int, int], kind: str, arg: str):
     """Look up config bits based on config option type and first argument."""
@@ -136,7 +137,7 @@ def configure_io(io_pin: int, icebox: iceconfig) -> tuple[tuple[int, int], str]:
 
     return ((x, y), f"io_{pad}/D_OUT_0")
 
-def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], tuple[str]]]:
+def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], ConfigOption]]:
     """Creates possible combinations of span -> local -> dout."""
     paths = []
     lookup = generate_lookup(tile)
@@ -158,32 +159,23 @@ def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfi
     io_tile, pin_out = configure_io(pin, icebox)
     nets = prepare_io(io_tile, pin_out)
 
-    for io_path, io_conf in nets:
-        path = route(dst_tile, io_tile, io_path[0], disallowed_nets, target_net=dst_net)
-        if not path:
+    io_conf_lu = {(*io_tile, k[0], None): v for k, v in nets}
+    router = Router([k[:-1] for k in io_conf_lu.keys()], (*dst_tile, dst_net), disallowed_nets=disallowed_nets, disallowed_tiles=disallowed_tiles)
+    if not (path := router.route()):
+        raise Exception
+
+    for bits in io_conf_lu[path[0]]:
+        bits.write(icebox.tile(*io_tile))
+
+    used_nets = set()
+
+    for x, y, net, bits in path:
+        if not bits:
             continue
+        bits.write(icebox.tile(x, y))
+        used_nets.add(translate_netname(x, y, icebox.max_x, icebox.max_y, net))
 
-        used_nets = set()
-
-        for x, y, net, bits in path:
-            if not bits:
-                continue
-            values = [x[0] != "!" for x in bits]
-            locations = [parse_config_bit(x) if x[0] != "!" else parse_config_bit(x[1:]) for x in bits]
-            option = ConfigOption(locations, values)
-            option.write(icebox.tile(x, y))
-            used_nets.add(translate_netname(x, y, icebox.max_x, icebox.max_y, net))
-
-        for bits in io_conf:
-            values = [x[0] != "!" for x in bits]
-            locations = [parse_config_bit(x) if x[0] != "!" else parse_config_bit(x[1:]) for x in bits]
-            option = ConfigOption(locations, values)
-            option.write(icebox.tile(*io_tile))
-
-
-        return used_nets
-
-    raise Exception
+    return used_nets
 
 @dataclass
 class SeedConfig:
@@ -229,12 +221,12 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 # config2 = SeedConfig(25, (13, 18), None, genome_tiles)
 # configure_seed(configs, "test_seed.asc")
 
-from repr import Genome, build_tiles, CF, GenomeWriter
+from genome import Genome, build_tiles, CF, GenomeWriter
 # xs = 4
 # ys = 29
-# target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
+target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
 # pins = [9, 11, 25, 27]
-target_tiles = [(8, 19), (8, 19), (7, 14), (7, 14)]
+# target_tiles = [(8, 19), (8, 19), (7, 14), (7, 14)]
 pins = [9, 11, 25, 27]
 
 writer = GenomeWriter(dict(zip(target_tiles, pins)))

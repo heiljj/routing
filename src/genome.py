@@ -1,17 +1,12 @@
 from __future__ import annotations
-from typing import Any, Protocol, Generator, Callable
+from typing import Protocol, Generator
 import random
 import re
-from enum import Enum, auto
-from icebox import iceconfig
 from dataclasses import dataclass
+from icebox import iceconfig
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
-
-class ConfigType:
-    buffer = auto()
-    routing = auto()
 
 @dataclass
 class ConfigBit:
@@ -25,7 +20,7 @@ class ConfigBit:
         return hash((self.row, self.col))
 
 class ConfigOption:
-    def __init__(self, bits: list[str], values: list[bool]):
+    def __init__(self, bits: list[ConfigBit], values: list[ConfigBit]):
         self.bits = bits
         self.values = values
 
@@ -41,6 +36,7 @@ class ConfigOption:
 
     def __hash__(self):
         return hash((*self.bits, *self.values))
+
 
 class CarryInSet(ConfigOption):
     def __init__(self, bit: ConfigBit, enabled: bool):
@@ -153,6 +149,21 @@ class ConfigFilter(Protocol):
 class TileSeedFactory(Protocol):
     def build(self) -> list[str]:
         pass
+
+def bits_to_option(bits: list[str]) -> ConfigOption:
+    parsed_bits = []
+    parsed_values = []
+    for bit in bits:
+        if bit[0] == "!":
+            parsed_bits.append(parse_config_bit(bit[1:]))
+            parsed_values.append(False)
+
+        else:
+            parsed_bits.append(parse_config_bit(bit))
+            parsed_values.append(True)
+
+    return ConfigOption(parsed_bits, parsed_values)
+
 
 def parse_tile_dbrow(row: list) -> list[ConfigOption]:
     bits = row[0]
