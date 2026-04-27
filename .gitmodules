@@ -1,0 +1,4 @@
+[submodule "icestorm"]
+	path = icestorm
+	url = https://github.com/YosysHQ/icestorm
+	ignore = all

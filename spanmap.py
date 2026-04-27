@@ -5,8 +5,8 @@ import functools
 from icestorm.icebox.icebox import iceconfig
 from dataclasses import dataclass
 from repr import ConfigOption, parse_config_bit, ConfigBit
-from icestorm.icebox.icebox_asc2hlc import translate_netname
-from icestorm.icebox.icebox_hlc2asc import untranslate_netname
+from icebox_asc2hlc import translate_netname
+from icebox_hlc2asc import untranslate_netname
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
@@ -218,8 +218,6 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
     genome_tiles = {(x, y) for x in range(target[0], target[0] + xs) for y in range(target[1], target[1] + ys)}
     return SeedConfig(pin, target, net, genome_tiles)
 
-
-
 # configs = [configure(25, (1, 1), 4, 4),
 #            configure(21, (16, 16), 4, 4),
 #            configure(9, (16, 16), 4, 4),
@@ -242,7 +240,7 @@ pins = [9, 11, 25, 27]
 writer = GenomeWriter(dict(zip(target_tiles, pins)))
 
 configs = [configure(pin, tile, 7, 10, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
-configure_seed([configs[3]], "test_seed.asc")
+configure_seed(configs, "test_seed.asc")
 
 all_tiles = [(x, y) for x in range(8, 16) for y in range(19, 25) if (x, y) in icebox.logic_tiles]
 built = build_tiles(all_tiles, CF(all_tiles, [(8, 19)]))
