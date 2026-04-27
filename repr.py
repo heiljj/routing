@@ -3,7 +3,7 @@ from typing import Any, Protocol, Generator, Callable
 import random
 import re
 from enum import Enum, auto
-from icestorm.icebox.icebox import iceconfig
+from icebox import iceconfig
 from dataclasses import dataclass
 
 icebox = iceconfig()
