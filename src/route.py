@@ -86,7 +86,7 @@ class Router:
 
         return False
 
-    def route(self) -> list[tuple[int, int, str, ConfigOption]] | False:
+    def route(self) -> list[tuple[int, int, str, ConfigOption | bool]]:
         """Returns list of (x, y, netname, config bits)"""
         for i in range(self.depth):
             if not self.paths:
@@ -248,9 +248,9 @@ all_tiles = [(x, y) for x in range(8, 16) for y in range(19, 25) if (x, y) in ic
 built = build_tiles(all_tiles, CF(all_tiles, [(8, 19)]))
 starting_genome = Genome(built)
 
-# for i in range(50):
-#     genomes = [starting_genome.clone() for _ in range(len(pins))]
-#     for genome in genomes:
-#         genome.mutate(0.5)
+for i in range(50):
+    genomes = [starting_genome.clone() for _ in range(len(pins))]
+    for genome in genomes:
+        genome.mutate(0.5)
 
-#     writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, (8, 19))
+    writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, (8, 19))
