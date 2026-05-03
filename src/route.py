@@ -170,7 +170,7 @@ def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfi
     nets = prepare_io(io_tile, pin_out)
 
     io_conf_lu = {(*io_tile, k[0], None): v for k, v in nets}
-    router = Router([k[:-1] for k in io_conf_lu.keys()], (*dst_tile, dst_net), disallowed_nets=disallowed_nets, disallowed_tiles=disallowed_tiles)
+    router = Router([k[:-1] for k in io_conf_lu.keys()], (*dst_tile, dst_net), disallowed_nets=disallowed_nets)
     if not (path := router.route()):
         raise Exception
 
@@ -178,14 +178,16 @@ def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfi
         bits.write(icebox.tile(*io_tile))
 
     used_nets = set()
+    used_nets_raw = set()
 
     for x, y, net, bits in path:
         if not bits:
             continue
         bits.write(icebox.tile(x, y))
+        used_nets_raw.add((x, y, net))
         used_nets.add(translate_netname(x, y, icebox.max_x, icebox.max_y, net))
 
-    return used_nets
+    return used_nets_raw, used_nets
 
 @dataclass
 class SeedConfig:
@@ -196,13 +198,20 @@ class SeedConfig:
 
 def configure_seed(configs: list[SeedConfig], file: str):
     r_nets = set()
+    r_nets_raw = set()
 
     icebox = iceconfig()
     icebox.setup_empty_5k()
 
     for config in configs:
-        new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox)
+        bad_tiles = set()
+        for cf2 in configs:
+            if cf2 is not config:
+                bad_tiles |= cf2.genome
+
+        new_r_nets_raw, new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox)
         r_nets = r_nets.union(new_r_nets)
+        r_nets_raw = r_nets_raw.union(new_r_nets_raw)
 
         # TODO this better, enables lutff/out -> span connection
         option = ConfigOption([ConfigBit(0, 48)], [True])
@@ -215,6 +224,8 @@ def configure_seed(configs: list[SeedConfig], file: str):
         contents = f.read()
     with open(file, "w") as f:
         f.write(".comment generated seed file\n" + contents)
+
+    return r_nets_raw
 
 def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> SeedConfig:
     genome_tiles = {(x, y) for x in range(target[0], target[0] + xs) for y in range(target[1], target[1] + ys)}
@@ -232,25 +243,21 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 # configure_seed(configs, "test_seed.asc")
 
 from genome import Genome, build_tiles, CF, GenomeWriter
-# xs = 4
-# ys = 29
-target_tiles = [(1, 30), (7, 30), (14, 30), (20, 30)]
-# pins = [9, 11, 25, 27]
-# target_tiles = [(8, 19), (8, 19), (7, 14), (7, 14)]
+target_tiles = [(1, 26), (7, 26), (14, 26), (20, 26)]
 pins = [9, 11, 25, 27]
 
 writer = GenomeWriter(dict(zip(target_tiles, pins)))
 
-configs = [configure(pin, tile, 7, 10, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
-configure_seed(configs, "test_seed.asc")
+configs = [configure(pin, tile, 7, 20, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
+used_nets = configure_seed(configs, "test_seed.asc")
 
-all_tiles = [(x, y) for x in range(8, 16) for y in range(19, 25) if (x, y) in icebox.logic_tiles]
-built = build_tiles(all_tiles, CF(all_tiles, [(8, 19)]))
+all_tiles = [(x, y) for x in range(1, 5) for y in range(6, 27) if (x, y) in icebox.logic_tiles]
+built = build_tiles(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], avoid_nets=used_nets))
 starting_genome = Genome(built)
 
-for i in range(50):
+for i in range(20):
     genomes = [starting_genome.clone() for _ in range(len(pins))]
     for genome in genomes:
-        genome.mutate(0.5)
+        genome.mutate(0.2)
 
-    writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, (8, 19))
+    writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, (1, 26))

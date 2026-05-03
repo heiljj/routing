@@ -4,6 +4,8 @@ import random
 import re
 from dataclasses import dataclass
 from icebox import iceconfig
+from icebox_asc2hlc import translate_netname
+from icebox_hlc2asc import untranslate_netname
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
@@ -37,6 +39,11 @@ class ConfigOption:
     def __hash__(self):
         return hash((*self.bits, *self.values))
 
+@dataclass
+class TileOption:
+    x: int
+    y: int
+    option: ConfigOption
 
 class CarryInSet(ConfigOption):
     def __init__(self, bit: ConfigBit, enabled: bool):
@@ -205,6 +212,8 @@ def parse_tile_dbrow(row: list) -> list[ConfigOption]:
             #TODO
             return []
         case _:
+            # This catches different lut options
+            # TODO should have separate options for dffenable type things
             index = int(re.search(r"LC_(\d)", kind).group(1))
             if not 0 <= index <= 7:
                 raise Exception("Bad index")
@@ -280,17 +289,35 @@ offset_map = {
 }
 
 class CF:
-    def __init__(self, valid_tiles: list[tuple[int, int]], pin_tiles: list[tuple[int, int]]):
+    def __init__(self, valid_tiles: list[tuple[int, int]], start_tiles: list[tuple[int, int]], reference_tile: tuple[int, int], avoid_nets: set[str]=None):
         self.valid_tiles = valid_tiles
-        self.pin_tiles = pin_tiles
+        self.pin_tiles = start_tiles
+        self.reference_tile = reference_tile
+        self.avoid_nets = set()
+
+        for x, y, net in avoid_nets:
+            xref_delta, yref_delta = x - self.reference_tile[0], y - self.reference_tile[1]
+
+            for pin_x, pin_y in self.pin_tiles:
+                try:
+                    new_x = pin_x + xref_delta
+                    new_y  = pin_y + yref_delta
+
+                    if 1 <= new_x <= 24 and 1 <= new_y <= 30:
+                        self.avoid_nets.add(translate_netname(new_x, new_y, icebox.max_x, icebox.max_y, net))
+                except Exception:
+                    print(f"Failed glb net translate: {x, y, net} to {new_x, new_y, net}")
 
     def valid(self, x, y, option):
         if isinstance(option, Buffer):
             if "glb" in option.src_net or "glb" in option.dst_net:
                 return False
 
-            # TODO glb
             if "sp" in option.src_net and "sp" in option.dst_net:
+                return False
+
+            # TODO prevent ice40viewer issues, this is an important connection so remove at some point
+            if "lout" in option.src_net:
                 return False
 
             nets = []
@@ -308,8 +335,17 @@ class CF:
                 if (x + offset[0], y + offset[1]) not in self.valid_tiles:
                     return False
 
-            # if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
-            #     return False
+            for net in nets:
+                if "sp" in net:
+                    glb_name = translate_netname(x, y, icebox.max_x, icebox.max_y, net)
+                    if glb_name in self.avoid_nets:
+                        return False
+
+                if "s_r" in net:
+                    return False
+
+            if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
+                return False
 
             found = set(nets)
 
