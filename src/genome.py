@@ -82,10 +82,17 @@ class TileOption:
     y: int
     option: ConfigOption
 
-def parse_config_bit(bit: str) -> ConfigBit:
+def parse_config_bit(bit: str) -> tuple[ConfigBit, bool]:
     row = re.search(r"B(\d+)", bit).group(1)
     col = re.search(r"\[(\d+)\]", bit).group(1)
-    return ConfigBit(int(row), int(col))
+    return ConfigBit(int(row), int(col)), bit[0] != "!"
+
+# TODO might want to convert this to correct type
+# but probably takes too long?
+def bits_to_option(bits: list[str]) -> ConfigOption:
+    parsed = (parse_config_bit(bit) for bit in bits)
+    bits, values = zip(*parsed)
+    return ConfigOption(bits, values)
 
 class ConfigSetting:
     def __init__(self, options: set[ConfigOption], current=None):
@@ -148,19 +155,6 @@ class TileSeedFactory(Protocol):
     def build(self) -> list[str]:
         pass
 
-def bits_to_option(bits: list[str]) -> ConfigOption:
-    parsed_bits = []
-    parsed_values = []
-    for bit in bits:
-        if bit[0] == "!":
-            parsed_bits.append(parse_config_bit(bit[1:]))
-            parsed_values.append(False)
-
-        else:
-            parsed_bits.append(parse_config_bit(bit))
-            parsed_values.append(True)
-
-    return ConfigOption(parsed_bits, parsed_values)
 
 
 def parse_tile_dbrow(row: list) -> list[ConfigOption]:
@@ -168,16 +162,8 @@ def parse_tile_dbrow(row: list) -> list[ConfigOption]:
     kind = row[1]
     args = row[2:]
 
-    parsed_bits = []
-    parsed_values = []
-    for bit in bits:
-        if bit[0] == "!":
-            parsed_bits.append(parse_config_bit(bit[1:]))
-            parsed_values.append(False)
-
-        else:
-            parsed_bits.append(parse_config_bit(bit))
-            parsed_values.append(True)
+    parsed = (parse_config_bit(bit) for bit in bits)
+    parsed_bits, parsed_values = zip(*parsed)
 
     match kind:
         case "CarryInSet":
@@ -365,11 +351,11 @@ class CF:
 
         return False
 
-def create_population(reference_tile: tuple[int, int], x_size: int, y_size: int, amount: int) -> list[Genome]:
-    locations = [(x, y) for x in range(reference_tile[0], reference_tile[0] + x_size) for y in range(reference_tile[1], reference_tile[1] + y_size) if (x, y) in icebox.logic_tiles]
-    tiles = build_tiles(locations, CF(locations, [reference_tile]))
-    genome = Genome(tiles)
-    return [genome.clone() for _ in range(amount)]
+# def create_population(reference_tile: tuple[int, int], x_size: int, y_size: int, amount: int) -> list[Genome]:
+#     locations = [(x, y) for x in range(reference_tile[0], reference_tile[0] + x_size) for y in range(reference_tile[1], reference_tile[1] + y_size) if (x, y) in icebox.logic_tiles]
+#     tiles = build_tiles(locations, CF(locations, [reference_tile]))
+#     genome = Genome(tiles)
+#     return [genome.clone() for _ in range(amount)]
 
 class GenomeWriter:
     def __init__(self, tile_to_pin: dict[tuple[int, int], int]):

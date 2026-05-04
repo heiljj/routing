@@ -29,6 +29,7 @@ def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, TileOptio
     else:
         nets = [(x[2], x[3], tuple(x[0])) for x in nets]
 
+    # TODO use actual types
     for i in range(len(nets)):
         nets[i] = (nets[i][0], nets[i][1], bits_to_option(nets[i][2]))
 
