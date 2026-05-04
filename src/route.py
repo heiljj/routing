@@ -5,7 +5,7 @@ import functools
 from dataclasses import dataclass
 from icebox_asc2hlc import translate_netname
 from icebox import iceconfig
-from genome import ConfigOption, parse_config_bit, ConfigBit, bits_to_option
+from genome import ConfigOption, parse_config_bit, ConfigBit, bits_to_option, TileOption, NetOption
 
 IPCONF_TILES = set((x, y) for x in [0, 25] for y in range(1, 31))
 
@@ -14,7 +14,7 @@ icebox.setup_empty_5k()
 
 
 @functools.cache
-def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, tuple[str, ConfigOption]]:
+def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, TileOption]:
     """Creates a lookup table of potential forward routing/buffer network connections in a tile.
     Set reverse=True for backwards instead."""
     nets = icebox.tile_db(*tile)
@@ -33,6 +33,7 @@ def generate_lookup(tile: tuple[int, int], reverse=False) -> dict[str, tuple[str
         nets[i] = (nets[i][0], nets[i][1], bits_to_option(nets[i][2]))
 
     nets = sorted(nets, key=lambda x : x[0])
+    # nets = [TileOption(*tile, net) for net in nets]
 
     # src -> dst, bitconfig
     return {k: ([x[1:] for x in i]) for k, i in itertools.groupby(nets, key=lambda x : x[0])}

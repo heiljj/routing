@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Protocol, Generator
+from collections.abc import Container
 import random
 import re
 from dataclasses import dataclass
@@ -9,6 +10,11 @@ from icebox_hlc2asc import untranslate_netname
 
 icebox = iceconfig()
 icebox.setup_empty_5k()
+
+@dataclass
+class Tile:
+    x: int
+    y: int
 
 @dataclass
 class ConfigBit:
@@ -22,7 +28,7 @@ class ConfigBit:
         return hash((self.row, self.col))
 
 class ConfigOption:
-    def __init__(self, bits: list[ConfigBit], values: list[ConfigBit]):
+    def __init__(self, bits: Container[ConfigBit], values: Container[ConfigBit]):
         self.bits = bits
         self.values = values
 
@@ -39,13 +45,7 @@ class ConfigOption:
     def __hash__(self):
         return hash((*self.bits, *self.values))
 
-@dataclass
-class TileOption:
-    x: int
-    y: int
-    option: ConfigOption
-
-class CarryInSet(ConfigOption):
+class SingleBitOption(ConfigOption):
     def __init__(self, bit: ConfigBit, enabled: bool):
         super().__init__([bit], [enabled])
 
@@ -53,43 +53,34 @@ class CarryInSet(ConfigOption):
     def enabled(self) -> bool:
         return self.values[0]
 
-class ColBufCtrl(ConfigOption):
-    def __init__(self, bit: ConfigBit, enabled: bool):
-        super().__init__([bit], [enabled])
+class CarryInSet(SingleBitOption): ...
 
-    @property
-    def enabled(self) -> bool:
-        return self.values[0]
+class ColBufCtrl(SingleBitOption): ...
 
-class LCLut(ConfigOption):
+class NegClk(SingleBitOption): ...
+
+class LCLut(SingleBitOption):
     def __init__(self, cell: int, index: int, bit: ConfigBit, enabled: bool):
-        super().__init__([bit], [enabled])
+        super().__init__(bit, enabled)
         self.cell = cell
         self.index = index
 
-    @property
-    def enabled(self) -> bool:
-        return self.values[0]
-
-class NegClk(ConfigOption):
-    def __init__(self, bit: ConfigBit, enabled: bool):
-        super().__init__([bit], [enabled])
-
-    @property
-    def enabled(self) -> bool:
-        return self.values[0]
-
-class Buffer(ConfigOption):
+class NetOption(ConfigOption):
     def __init__(self, bits: tuple[ConfigBit], values: tuple[bool], src_net: str, dst_net: str):
         super().__init__(bits, values)
         self.src_net = src_net
         self.dst_net = dst_net
 
-class Routing(ConfigOption):
-    def __init__(self, bits: tuple[ConfigBit], values: tuple[bool], net1: str, net2: str):
-        super().__init__(bits, values)
-        self.net1 = net1
-        self.net2 = net2
+class Buffer(NetOption): ...
+
+class Routing(NetOption): ...
+    # NOTE pretty sure this is directional but might not be
+
+@dataclass
+class TileOption:
+    x: int
+    y: int
+    option: ConfigOption
 
 def parse_config_bit(bit: str) -> ConfigBit:
     row = re.search(r"B(\d+)", bit).group(1)
@@ -124,7 +115,7 @@ class ConfigSetting:
     def clone(self) -> ConfigSetting:
         return ConfigSetting(self.options, current=self.current)
 
-class Tile:
+class TileConfig:
     def __init__(self, settings: dict[str, ConfigSetting]):
         self.settings = settings
 
@@ -140,14 +131,14 @@ class Tile:
     def set(self, option: ConfigOption):
         self.settings[option.conflicts].set(option)
 
-    def crossover(self, other: Tile, chance: float):
+    def crossover(self, other: TileConfig, chance: float):
         for key in self.settings:
             if random.random() < chance:
                 self.settings[key].crossover(other.settings[key], chance)
 
-    def clone(self) -> Tile:
+    def clone(self) -> TileConfig:
         new_settings = {k: v.clone() for k, v in self.settings.items()}
-        return Tile(new_settings)
+        return TileConfig(new_settings)
 
 class ConfigFilter(Protocol):
     def valid(self, x, y, option: ConfigOption):
@@ -233,7 +224,7 @@ def build_options(iceconfig_settings: list[list[str]]) -> Generator[ConfigOption
 # NOTE tile locations are meant to be relative with ConfigFilter
 # perfectly fine to create multiple genomes from the same settings and
 # write to different tile groups so long as they are the same shape
-def build_tile(x: int, y: int, cfilter: ConfigFilter) -> Tile:
+def build_tile(x: int, y: int, cfilter: ConfigFilter) -> TileConfig:
     options = build_options(icebox.tile_db(x, y))
 
     settings: dict[set[ConfigOption]] = {}
@@ -246,10 +237,10 @@ def build_tile(x: int, y: int, cfilter: ConfigFilter) -> Tile:
 
         settings[option.conflicts].add(option)
 
-    return Tile({setting: ConfigSetting(options) for setting, options in settings.items()})
+    return TileConfig({setting: ConfigSetting(options) for setting, options in settings.items()})
 
 class Genome:
-    def __init__(self, tiles: dict[tuple[int, int], Tile]):
+    def __init__(self, tiles: dict[tuple[int, int], TileConfig]):
         self.tiles = tiles
 
     def mutate(self, chance: float):
@@ -269,7 +260,7 @@ class Genome:
         new_tiles = {k: v.clone() for k, v in self.tiles.items()}
         return Genome(new_tiles)
 
-def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], Tile]:
+def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], TileConfig]:
     out = {}
 
     for x, y in tiles:
