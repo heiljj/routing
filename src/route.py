@@ -246,14 +246,19 @@ def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> 
 # configure_seed(configs, "test_seed.asc")
 
 from genome import Genome, build_tiles, CF, GenomeWriter
+# tiles that output will be located on, going from lutff_0/out -> outgoing span
 target_tiles = [(1, 26), (7, 26), (14, 26), (20, 26)]
+# pin io numbers
 pins = [9, 11, 25, 27]
 
 writer = GenomeWriter(dict(zip(target_tiles, pins)))
 
+# x size 7, y size 20 of genome, sp4_v_b_0 used as outgoing span
 configs = [configure(pin, tile, 7, 20, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
 used_nets = configure_seed(configs, "test_seed.asc")
 
+# tile group used to create mutation options, other genome locations need to be identical
+# this should be based off of one of the target tiles and have the same size used in configure
 all_tiles = [(x, y) for x in range(1, 5) for y in range(6, 27) if (x, y) in icebox.logic_tiles]
 built = build_tiles(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], avoid_nets=used_nets))
 starting_genome = Genome(built)
