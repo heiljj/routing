@@ -166,7 +166,8 @@ def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], ConfigO
 
     return paths
 
-def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_tiles: set[tuple[int, int]]=set(), disallowed_nets: set[str]=set()):
+# def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_tiles: set[tuple[int, int]]=set(), disallowed_nets: set[str]=set()):
+def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_nets: set[str]=set()):
     """Creates a path between pin and the dst_net on the dst_tile, writes to icebox."""
     io_tile, pin_out = configure_io(pin, icebox)
     nets = prepare_io(io_tile, pin_out)
