@@ -1,8 +1,9 @@
 from __future__ import annotations
-from typing import Protocol, Generator
-from collections.abc import Container
+from typing import Protocol
+from collections.abc import Collection, Generator, Iterable, Container
 import random
 import re
+import functools
 from dataclasses import dataclass
 from icebox import iceconfig
 from icebox_asc2hlc import translate_netname
@@ -11,12 +12,21 @@ from icebox_hlc2asc import untranslate_netname
 icebox = iceconfig()
 icebox.setup_empty_5k()
 
-@dataclass
+@dataclass(frozen=True, slots=True)
 class Tile:
     x: int
     y: int
 
-@dataclass
+    def __add__(self, other):
+        return Tile(self.x + other.x, self.y + other.y)
+
+    def __sub__(self, other):
+        return Tile(self.x - other.x, self.y - other.y)
+
+    def __hash__(self):
+        return hash((self.x, self.y))
+
+@dataclass(frozen=True, slots=True)
 class ConfigBit:
     row: int
     col: int
@@ -28,15 +38,15 @@ class ConfigBit:
         return hash((self.row, self.col))
 
 class ConfigOption:
-    def __init__(self, bits: Container[ConfigBit], values: Container[ConfigBit]):
-        self.bits = bits
-        self.values = values
+    def __init__(self, bits: Iterable[ConfigBit], values: Iterable[ConfigBit]):
+        self.bits = tuple(bits)
+        self.values = tuple(values)
 
-    def write(self, tile: list[str]):
+    def write(self, tile_data: list[str]):
         for bit, state in zip(self.bits, self.values):
-            current = list(tile[bit.row])
+            current = list(tile_data[bit.row])
             current[bit.col] = "1" if state else "0"
-            tile[bit.row] = "".join(current)
+            tile_data[bit.row] = "".join(current)
 
     @property
     def conflicts(self):
@@ -66,7 +76,7 @@ class LCLut(SingleBitOption):
         self.index = index
 
 class NetOption(ConfigOption):
-    def __init__(self, bits: tuple[ConfigBit], values: tuple[bool], src_net: str, dst_net: str):
+    def __init__(self, bits: Iterable[ConfigBit], values: Iterable[bool], src_net: str, dst_net: str):
         super().__init__(bits, values)
         self.src_net = src_net
         self.dst_net = dst_net
@@ -78,8 +88,7 @@ class Routing(NetOption): ...
 
 @dataclass
 class TileOption:
-    x: int
-    y: int
+    tile: Tile
     option: ConfigOption
 
 def parse_config_bit(bit: str) -> tuple[ConfigBit, bool]:
@@ -120,11 +129,99 @@ class ConfigSetting:
             self.current = other.current
 
     def clone(self) -> ConfigSetting:
+        """Shallow copies ConfigOption structure to avoid having to recompute mutation options."""
         return ConfigSetting(self.options, current=self.current)
 
+@functools.cache
+def _parse_tile_dbrow(row: tuple) -> tuple[ConfigOption]:
+    bits = row[0]
+    kind = row[1]
+    args = row[2:]
+
+    parsed = (parse_config_bit(bit) for bit in bits)
+    parsed_bits, parsed_values = zip(*parsed)
+
+    match kind:
+        case "CarryInSet":
+            return (CarryInSet(parsed_bits[0], parsed_values[0]),)
+        case "ColBufCtrl":
+            return (ColBufCtrl(parsed_bits[0], parsed_values[0]),)
+        case "NegClk":
+            return (NegClk(parsed_bits[0], parsed_values[0]),)
+        case "buffer":
+            return (Buffer(parsed_bits, parsed_values, args[0], args[1]),)
+        case "routing":
+            return (Routing(parsed_bits, parsed_values, args[0], args[1]),)
+        case "RamConfig":
+            #TODO
+            return tuple()
+        case "RamCascade":
+            #TODO
+            return tuple()
+        case "Cascade":
+            #TODO
+            return tuple()
+        case "IpConfig":
+            #TODO
+            return tuple()
+        case "IOB_0":
+            #TODO
+            return tuple()
+        case "IOB_1":
+            #TODO
+            return tuple()
+        case "IoCtrl":
+            #TODO
+            return tuple()
+        case "Icegate":
+            #TODO
+            return tuple()
+        case "PLL":
+            #TODO
+            return tuple()
+        case _:
+            # This catches different lut options
+            # TODO should have separate options for dffenable type things
+            index = int(re.search(r"LC_(\d)", kind).group(1))
+            if not 0 <= index <= 7:
+                raise Exception("Bad index")
+
+            values = []
+            for i, bit in enumerate(parsed_bits):
+                values.append(LCLut(index, i, bit, True))
+                values.append(LCLut(index, i, bit, False))
+
+            return tuple(values)
+
+def parse_tile_dbrow(row: list) -> tuple[ConfigOption]:
+    new_row = (tuple(row[0]), *row[1:])
+    return _parse_tile_dbrow(new_row)
+
+
+
+class ConfigFilter(Protocol):
+    def valid(self, x, y, option: ConfigOption) -> bool:
+        """Whether a ConfigOption should be selectable for mutation."""
 class TileConfig:
     def __init__(self, settings: dict[str, ConfigSetting]):
         self.settings = settings
+
+    @classmethod
+    def from_cfilter(cls, tile: Tile, cfilter: ConfigFilter) -> TileConfig:
+        """Creates a tile from a ConfigFilter rather than ConfigOptions"""
+        options = build_options(icebox.tile_db(tile.x, tile.y))
+
+        settings: dict[set[ConfigOption]] = {}
+        for option in options:
+            if not cfilter.valid(tile, option):
+                continue
+
+            if option.conflicts not in settings:
+                settings[option.conflicts] = set()
+
+            settings[option.conflicts].add(option)
+
+        return cls({setting: ConfigSetting(options) for setting, options in settings.items()})
 
     def mutate(self, chance):
         for setting in self.settings.values():
@@ -144,90 +241,28 @@ class TileConfig:
                 self.settings[key].crossover(other.settings[key], chance)
 
     def clone(self) -> TileConfig:
+        """Creates a copy to avoid having to recompute mutation options, don't have to worry about duplicated references
+        so long as the internals are not messed with."""
         new_settings = {k: v.clone() for k, v in self.settings.items()}
         return TileConfig(new_settings)
-
-class ConfigFilter(Protocol):
-    def valid(self, x, y, option: ConfigOption):
-        pass
-
-class TileSeedFactory(Protocol):
-    def build(self) -> list[str]:
-        pass
-
-
-
-def parse_tile_dbrow(row: list) -> list[ConfigOption]:
-    bits = row[0]
-    kind = row[1]
-    args = row[2:]
-
-    parsed = (parse_config_bit(bit) for bit in bits)
-    parsed_bits, parsed_values = zip(*parsed)
-
-    match kind:
-        case "CarryInSet":
-            return [CarryInSet(parsed_bits[0], parsed_values[0])]
-        case "ColBufCtrl":
-            return [ColBufCtrl(parsed_bits[0], parsed_values[0])]
-        case "NegClk":
-            return [NegClk(parsed_bits[0], parsed_values[0])]
-        case "buffer":
-            return [Buffer(parsed_bits, parsed_values, args[0], args[1])]
-        case "routing":
-            return [Routing(parsed_bits, parsed_values, args[0], args[1])]
-        case "RamConfig":
-            #TODO
-            return []
-        case "RamCascade":
-            #TODO
-            return []
-        case "Cascade":
-            #TODO
-            return []
-        case "IpConfig":
-            #TODO
-            return []
-        case _:
-            # This catches different lut options
-            # TODO should have separate options for dffenable type things
-            index = int(re.search(r"LC_(\d)", kind).group(1))
-            if not 0 <= index <= 7:
-                raise Exception("Bad index")
-
-            values = []
-            for i, bit in enumerate(parsed_bits):
-                values.append(LCLut(index, i, bit, True))
-                values.append(LCLut(index, i, bit, False))
-
-            return values
 
 def build_options(iceconfig_settings: list[list[str]]) -> Generator[ConfigOption]:
     for setting in iceconfig_settings:
         for option in parse_tile_dbrow(setting):
             yield option
 
-# NOTE tile locations are meant to be relative with ConfigFilter
-# perfectly fine to create multiple genomes from the same settings and
-# write to different tile groups so long as they are the same shape
-def build_tile(x: int, y: int, cfilter: ConfigFilter) -> TileConfig:
-    options = build_options(icebox.tile_db(x, y))
-
-    settings: dict[set[ConfigOption]] = {}
-    for option in options:
-        if not cfilter.valid(x, y, option):
-            continue
-
-        if option.conflicts not in settings:
-            settings[option.conflicts] = set()
-
-        settings[option.conflicts].add(option)
-
-    return TileConfig({setting: ConfigSetting(options) for setting, options in settings.items()})
-
 class Genome:
     def __init__(self, tiles: dict[tuple[int, int], TileConfig]):
         self.tiles = tiles
+
+    @classmethod
+    def from_cfilter(cls, tiles: Collection[Tile], cfilter: ConfigFilter) -> Genome:
+        out = {}
+
+        for tile in tiles:
+            out[tile] = TileConfig.from_cfilter(tile, cfilter)
+
+        return cls(out)
 
     def mutate(self, chance: float):
         for tile in self.tiles.values():
@@ -237,22 +272,35 @@ class Genome:
         for location in self.tiles.keys():
             self.tiles[location].crossover(other.tiles[location], chance)
 
-    def write(self, icebox: iceconfig, x_offset: int, y_offset: int):
-        for x, y in self.tiles:
-            self.tiles[(x, y)].write(icebox.tile(x + x_offset, y + y_offset))
+    def write(self, ic: iceconfig, tile_offset: Tile):
+        for tile in self.tiles:
+            self.tiles[tile].write(ic.tile(tile.x + tile_offset.x, tile.y + tile_offset.y))
 
     def clone(self) -> Genome:
         """Creates new genome out of the existing tile set with shared ConfigOption references."""
         new_tiles = {k: v.clone() for k, v in self.tiles.items()}
         return Genome(new_tiles)
 
-def build_tiles(tiles: list[tuple[int, int]], cfilter: ConfigFilter) -> dict[tuple[int, int], TileConfig]:
-    out = {}
 
-    for x, y in tiles:
-        out[(x, y)] = build_tile(x, y, cfilter)
+class GenomeWriter:
+    def __init__(self, tile_to_pin: dict[Tile, int]):
+        self.tile_to_pin = tile_to_pin
 
-    return out
+    def write(self, seed: str, fpath: str, genomes: Collection[Genome], reference_tile: Tile) -> dict[Genome, int]:
+        """Writes genomes to circuit file. Each genome is translated from the starting reference
+        tile to one included in the tile_to_pin map. Returns mapping of genome to io pin."""
+        icebox = iceconfig()
+        icebox.read_file(seed)
+        out = {}
+        for genome, target_tile in zip(genomes, self.tile_to_pin.keys()):
+            out[genome] = self.tile_to_pin[target_tile]
+            genome.write(icebox, target_tile - reference_tile)
+
+        icebox.write_file(fpath)
+        with open(fpath, "r") as f:
+            contents = f.read()
+        with open(fpath, "w") as f:
+            f.write(".comment generated seed file\n" + contents)
 
 offset_map = {
     "tnr": (1, 1),
@@ -265,27 +313,27 @@ offset_map = {
     "bnl": (-1, -1)
 }
 
+# TODO make this configurable and clean
 class CF:
-    def __init__(self, valid_tiles: list[tuple[int, int]], start_tiles: list[tuple[int, int]], reference_tile: tuple[int, int], avoid_nets: set[str]=None):
+    def __init__(self, valid_tiles: Container[Tile], start_tiles: Collection[Tile] , reference_tile: Tile, avoid_nets: Container[tuple[Tile, str]]=None):
         self.valid_tiles = valid_tiles
         self.pin_tiles = start_tiles
         self.reference_tile = reference_tile
         self.avoid_nets = set()
 
         for x, y, net in avoid_nets:
-            xref_delta, yref_delta = x - self.reference_tile[0], y - self.reference_tile[1]
+            tile_delta = self.reference_tile - Tile(x, y)
 
-            for pin_x, pin_y in self.pin_tiles:
+            for tile in self.pin_tiles:
                 try:
-                    new_x = pin_x + xref_delta
-                    new_y  = pin_y + yref_delta
+                    new_tile = tile + tile_delta
 
-                    if 1 <= new_x <= 24 and 1 <= new_y <= 30:
-                        self.avoid_nets.add(translate_netname(new_x, new_y, icebox.max_x, icebox.max_y, net))
+                    if 1 <= new_tile.x <= 24 and 1 <= new_tile.y <= 30:
+                        self.avoid_nets.add(translate_netname(new_tile.x, new_tile.y, icebox.max_x, icebox.max_y, net))
                 except Exception:
-                    print(f"Failed glb net translate: {x, y, net} to {new_x, new_y, net}")
+                    print(f"Failed glb net translate: {x, y, net} to {new_tile.x, new_tile.y, net}")
 
-    def valid(self, x, y, option):
+    def valid(self, tile, option):
         if isinstance(option, Buffer):
             if "glb" in option.src_net or "glb" in option.dst_net:
                 return False
@@ -300,43 +348,46 @@ class CF:
             nets = []
 
             if "sp" in option.src_net:
-                nets.append((x, y, option.src_net))
+                nets.append((tile, option.src_net))
 
             if "sp" in option.dst_net:
-                nets.append((x, y, option.dst_net))
+                nets.append((tile, option.dst_net))
 
             if "neigh" in option.src_net or "logic" in option.src_net:
                 direction = re.search(r"op_(.*)_\d", option.src_net).group(1)
 
                 offset = offset_map[direction]
-                if (x + offset[0], y + offset[1]) not in self.valid_tiles:
+                if (tile.x + offset[0], tile.y + offset[1]) not in self.valid_tiles:
                     return False
 
             for net in nets:
                 if "sp" in net:
-                    glb_name = translate_netname(x, y, icebox.max_x, icebox.max_y, net)
+                    glb_name = translate_netname(tile.x, tile.y, icebox.max_x, icebox.max_y, net)
                     if glb_name in self.avoid_nets:
                         return False
 
                 if "s_r" in net:
                     return False
 
-            if option.dst_net == "local_g0_0" and (x, y) in self.pin_tiles:
+            if option.dst_net == "local_g0_0" and tile in self.pin_tiles:
                 return False
 
             found = set(nets)
 
             while nets:
-                new_nets = icebox.follow_net(nets.pop())
+                tile, name = nets.pop()
+                new_nets = icebox.follow_net((tile.x, tile.y, name))
 
                 for net in new_nets:
-                    x, y, _ = net
-                    if (x, y) not in self.valid_tiles:
+                    tile = Tile(net[0], net[1])
+                    net = net[2]
+
+                    if tile not in self.valid_tiles:
                         return False
 
-                    if net not in found:
-                        nets.append(net)
-                        found.add(net)
+                    if (tile, net) not in found:
+                        nets.append((tile, net))
+                        found.add((tile, net))
 
             return True
 
@@ -356,23 +407,3 @@ class CF:
 #     tiles = build_tiles(locations, CF(locations, [reference_tile]))
 #     genome = Genome(tiles)
 #     return [genome.clone() for _ in range(amount)]
-
-class GenomeWriter:
-    def __init__(self, tile_to_pin: dict[tuple[int, int], int]):
-        self.tile_to_pin = tile_to_pin
-
-    def write(self, seed: str, fpath: str, genomes: list[Genome], reference_tile: tuple[str, str]) -> dict[Genome, int]:
-        """Writes genomes to circuit file. Each genome is translated from the starting reference
-        tile to one included in the tile_to_pin map. Returns mapping of genome to io pin."""
-        icebox = iceconfig()
-        icebox.read_file(seed)
-        out = {}
-        for genome, target_tile in zip(genomes, self.tile_to_pin.keys()):
-            out[genome] = self.tile_to_pin[target_tile]
-            genome.write(icebox, target_tile[0] - reference_tile[0], target_tile[1] - reference_tile[1])
-
-        icebox.write_file(fpath)
-        with open(fpath, "r") as f:
-            contents = f.read()
-        with open(fpath, "w") as f:
-            f.write(".comment generated seed file\n" + contents)
