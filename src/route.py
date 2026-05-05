@@ -2,15 +2,11 @@
 The initial network starts from a logic cell output."""
 import functools
 from dataclasses import dataclass
-from icebox_asc2hlc import translate_netname
-from icebox import iceconfig
-from genome import ConfigOption, ConfigBit, bits_to_option, TileOption, NetOption, parse_tile_dbrow, Tile
+from genome import ConfigOption, ConfigBit, bits_to_option, NetOption, Tile, IceConfig, translate_netname, untranslate_netname
 
 IPCONF_TILES = set(Tile(x, y) for x in [0, 25] for y in range(1, 31))
 
-icebox = iceconfig()
-icebox.setup_empty_5k()
-
+ic = IceConfig()
 
 @functools.cache
 def generate_lookup(tile: Tile, reverse=False) -> dict[str, NetOption]:
@@ -18,16 +14,7 @@ def generate_lookup(tile: Tile, reverse=False) -> dict[str, NetOption]:
     Set reverse=True for backwards instead."""
 
     out = {}
-    for row in icebox.tile_db(tile.x, tile.y):
-        # list not hashable
-        option = parse_tile_dbrow(row)
-
-        if not option:
-            continue
-
-        # only LUT options return multiples
-        option = option[0]
-
+    for option in ic.tile_db(tile):
         if not isinstance(option, NetOption):
             continue
 
@@ -43,7 +30,6 @@ def generate_lookup(tile: Tile, reverse=False) -> dict[str, NetOption]:
 
     return out
 
-
 # TODO might be able to use ipcon tiles, need to confirm
 class Router:
     def __init__(self, start_options: list[tuple[Tile, str]], target_net: tuple[Tile, str], disallowed_nets: set[str]=set(), disallowed_tiles: set[Tile]=IPCONF_TILES, depth: int=100):
@@ -55,7 +41,7 @@ class Router:
         but they will not be completely contained in them (a genome that avoids outside span connections will not be able to connect)
         - depth: depth of search tree
         """
-        self.paths: list[tuple[Tile, str, TileOption | None]] = [[(*option, None)] for option in start_options]
+        self.paths: list[tuple[Tile, str, NetOption | None]] = [[(*option, None)] for option in start_options]
         self.target = target_net
         self.disallowed_nets = disallowed_nets
         self.disallowed_tiles = disallowed_tiles
@@ -67,11 +53,11 @@ class Router:
         if tile in self.disallowed_tiles or (tile, net) in self.visited_nets:
             return False
 
-        glb_netname = translate_netname(tile.x, tile.y, icebox.max_x, icebox.max_y, net)
+        glb_netname = translate_netname(tile, net)
 
         return glb_netname not in self.disallowed_nets and glb_netname not in self.visited_nets
 
-    def _path_if_valid(self, path, tile: Tile, net: str, config: TileOption):
+    def _path_if_valid(self, path, tile: Tile, net: str, config: ConfigOption):
         """Adds path to queue if new connection is valid"""
         if self._connection_valid(tile, net):
             self.visited_nets.add((tile, net))
@@ -84,8 +70,8 @@ class Router:
         if (tile, net) == self.target:
             return True
 
-        for new_x, new_y, new_net in icebox.follow_net((tile.x, tile.y, net)):
-            self._path_if_valid(path, Tile(new_x, new_y), new_net, None)
+        for new_tile, new_net in ic.follow_net(tile, net):
+            self._path_if_valid(path, new_tile, new_net, None)
 
         lookup = generate_lookup(tile, reverse=True)
         for buffer, config in lookup.get(net, {}).items():
@@ -109,44 +95,41 @@ class Router:
 
         return False
 
-
-def get_config_option(tile: Tile, kind: str, arg: str) -> ConfigOption:
+# TODO use ic
+def write_config_option_args(tile: Tile, kind: str, arg: str, ic: IceConfig):
     """Look up config bits based on config option type and first argument."""
-    for row in icebox.tile_db(tile.x, tile.y):
+    for row in ic._icebox.tile_db(tile.x, tile.y):
         if row[1] == kind:
             if row[2] == arg:
-                return bits_to_option(row[0])
+                option =  bits_to_option(row[0])
+                option.write(ic.tile(tile))
+                return
 
-def configure_io(io_pin: int, ic: iceconfig) -> tuple[tuple[int, int], str]:
+def configure_io(io_pin: int, ic: IceConfig) -> tuple[tuple[int, int], str]:
     """Writes io pad configuration, returns io tile location and out net. Configures following bits:
     - IOB_[pad] PINTYPE_0, 3, and 4
     - cf_bit_35 or 39 depending on pad location
     - REN_[pad] on corresponding ren tile
     """
-    pad_lookup = {row[0]: row[1:] for row in ic.pinloc_db()}
-    x, y, pad = pad_lookup[str(io_pin)]
+    io_tile, io_pad = ic.pinloc_db(io_pin)
 
-    ie_lookup = {row[:3]: row[3:] for row in ic.ieren_db()}
-    ren_x, ren_y, ren_pad = ie_lookup[(x, y, pad)]
-
-    ren = f"REN_{ren_pad}"
-    bits = get_config_option(Tile(ren_x, ren_y), "IoCtrl", ren)
-    bits.write(ic.tile(ren_x, ren_y))
-
-    if pad == 1:
+    if io_pad == 1:
         cf_bit = "cf_bit_39"
     else:
         cf_bit = "cf_bit_35"
 
-    bits = get_config_option(Tile(x, y), "IoCtrl", cf_bit)
-    bits.write(ic.tile(x, y))
+    write_config_option_args(io_tile, "IoCtrl", cf_bit, ic)
 
-    iob = f"IOB_{pad}"
+    ren_tile, ren_pad = ic.ieren_db(io_tile, io_pad)
+
+    ren = f"REN_{ren_pad}"
+    write_config_option_args(ren_tile, "IoCtrl", ren, ic)
+
+    iob = f"IOB_{io_pad}"
     for option in ["PINTYPE_0", "PINTYPE_3", "PINTYPE_4"]:
-        bits = get_config_option(Tile(ren_x, ren_y), iob, option)
-        bits.write(ic.tile(ren_x, ren_y))
+        write_config_option_args(ren_tile, iob, option, ic)
 
-    return (Tile(x, y), f"io_{pad}/D_OUT_0")
+    return (io_tile, f"io_{io_pad}/D_OUT_0")
 
 def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], ConfigOption]]:
     """Creates possible combinations of span -> local -> dout."""
@@ -166,9 +149,9 @@ def prepare_io(tile: tuple[int, int], pin_out) -> list[tuple[tuple[str], ConfigO
     return paths
 
 # def route_io(pin: int, dst_tile: tuple[int, int], dst_net: str, icebox: iceconfig, disallowed_tiles: set[tuple[int, int]]=set(), disallowed_nets: set[str]=set()):
-def route_io(pin: int, dst_tile: Tile, dst_net: str, icebox: iceconfig, disallowed_nets: set[str]=set()):
+def route_io(pin: int, dst_tile: Tile, dst_net: str, ic: IceConfig, disallowed_nets: set[str]=set()):
     """Creates a path between pin and the dst_net on the dst_tile, writes to icebox."""
-    io_tile, pin_out = configure_io(pin, icebox)
+    io_tile, pin_out = configure_io(pin, ic)
     nets = prepare_io(io_tile, pin_out)
 
     io_conf_lu = {(io_tile, k[0], None): v for k, v in nets}
@@ -177,7 +160,7 @@ def route_io(pin: int, dst_tile: Tile, dst_net: str, icebox: iceconfig, disallow
         raise Exception
 
     for bits in io_conf_lu[path[0]]:
-        bits.write(icebox.tile(io_tile.x, io_tile.y))
+        bits.write(ic.tile(io_tile))
 
     used_nets = set()
     used_nets_raw = set()
@@ -185,9 +168,9 @@ def route_io(pin: int, dst_tile: Tile, dst_net: str, icebox: iceconfig, disallow
     for tile, net, bits in path:
         if not bits:
             continue
-        bits.write(icebox.tile(tile.x, tile.y))
-        used_nets_raw.add((tile.x, tile.y, net))
-        used_nets.add(translate_netname(tile.x, tile.y, icebox.max_x, icebox.max_y, net))
+        bits.write(ic.tile(tile))
+        used_nets_raw.add((tile, net))
+        used_nets.add(translate_netname(tile, net))
 
     return used_nets_raw, used_nets
 
@@ -202,8 +185,7 @@ def configure_seed(configs: list[SeedConfig], file: str):
     r_nets = set()
     r_nets_raw = set()
 
-    icebox = iceconfig()
-    icebox.setup_empty_5k()
+    ic = IceConfig()
 
     for config in configs:
         bad_tiles = set()
@@ -211,21 +193,15 @@ def configure_seed(configs: list[SeedConfig], file: str):
             if cf2 is not config:
                 bad_tiles |= cf2.genome
 
-        new_r_nets_raw, new_r_nets = route_io(config.pin, config.output_tile, config.output_net, icebox)
+        new_r_nets_raw, new_r_nets = route_io(config.pin, config.output_tile, config.output_net, ic)
         r_nets = r_nets.union(new_r_nets)
         r_nets_raw = r_nets_raw.union(new_r_nets_raw)
 
         # TODO this better, enables lutff/out -> span connection
         option = ConfigOption([ConfigBit(0, 48)], [True])
-        option.write(icebox.tile(config.output_tile.x, config.output_tile.y))
+        option.write(ic.tile(config.output_tile))
 
-    icebox.write_file(file)
-
-    # part of bitstream format
-    with open(file, "r") as f:
-        contents = f.read()
-    with open(file, "w") as f:
-        f.write(".comment generated seed file\n" + contents)
+    ic.write_file(file)
 
     return r_nets_raw
 
@@ -258,8 +234,8 @@ used_nets = configure_seed(configs, "test_seed.asc")
 
 # tile group used to create mutation options, other genome locations need to be identical
 # this should be based off of one of the target tiles and have the same size used in configure
-all_tiles = [Tile(x, y) for x in range(1, 5) for y in range(6, 27) if (x, y) in icebox.logic_tiles]
-starting_genome = Genome.from_cfilter(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], avoid_nets=used_nets))
+all_tiles = [Tile(x, y) for x in range(1, 5) for y in range(6, 27) if Tile(x, y) in ic.logic_tiles]
+starting_genome = Genome.from_cfilter(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], ic, avoid_nets=used_nets), ic)
 
 for i in range(20):
     genomes = [starting_genome.clone() for _ in range(len(pins))]
