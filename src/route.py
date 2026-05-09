@@ -172,7 +172,7 @@ def route_io(pin: int, dst_tile: Tile, dst_net: str, ic: IceConfig, disallowed_n
         used_nets_raw.add((tile, net))
         used_nets.add(translate_netname(tile, net))
 
-    return used_nets_raw, used_nets
+    return used_nets_raw, used_nets, path
 
 @dataclass
 class SeedConfig:
@@ -186,6 +186,7 @@ def configure_seed(configs: list[SeedConfig], file: str):
     r_nets_raw = set()
 
     ic = IceConfig()
+    path = []
 
     for config in configs:
         bad_tiles = set()
@@ -193,7 +194,8 @@ def configure_seed(configs: list[SeedConfig], file: str):
             if cf2 is not config:
                 bad_tiles |= cf2.genome
 
-        new_r_nets_raw, new_r_nets = route_io(config.pin, config.output_tile, config.output_net, ic)
+        new_r_nets_raw, new_r_nets, coptions = route_io(config.pin, config.output_tile, config.output_net, ic)
+        path.extend(coptions)
         r_nets = r_nets.union(new_r_nets)
         r_nets_raw = r_nets_raw.union(new_r_nets_raw)
 
@@ -203,7 +205,7 @@ def configure_seed(configs: list[SeedConfig], file: str):
 
     ic.write_file(file)
 
-    return r_nets_raw
+    return r_nets_raw, path
 
 def configure(pin: int, target: tuple[int, int], xs: int, ys: int, net=None) -> SeedConfig:
     genome_tiles = {(x, y) for x in range(target.x, target.x + xs) for y in range(target.y, target.y + ys)}
@@ -230,16 +232,20 @@ writer = GenomeWriter(dict(zip(target_tiles, pins)))
 
 # x size 7, y size 20 of genome, sp4_v_b_0 used as outgoing span
 configs = [configure(pin, tile, 7, 20, net="sp4_v_b_0") for pin, tile in zip(pins, target_tiles)]
-used_nets = configure_seed(configs, "test_seed.asc")
+used_nets, conflicts = configure_seed(configs, "test_seed.asc")
 
 # tile group used to create mutation options, other genome locations need to be identical
 # this should be based off of one of the target tiles and have the same size used in configure
 all_tiles = [Tile(x, y) for x in range(1, 5) for y in range(6, 27) if Tile(x, y) in ic.logic_tiles]
-starting_genome = Genome.from_cfilter(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], ic, avoid_nets=used_nets), ic)
+starting_genome = Genome.from_cfilter(all_tiles, CF(all_tiles, target_tiles, target_tiles[0], ic, avoid_nets=used_nets, conflicts=conflicts), ic)
 
-for i in range(20):
+import subprocess
+
+for i in range(100):
     genomes = [starting_genome.clone() for _ in range(len(pins))]
     for genome in genomes:
-        genome.mutate(0.2)
+        genome.mutate(0.5)
 
-    writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", genomes, Tile(1, 26))
+    writer.write("test_seed.asc", f"out/test_latest_output_{i}.asc", [genomes[0] for _ in range(len(pins))], Tile(1, 26))
+    subprocess.run(["icepack", f"out/test_latest_output_{i}.asc", f"bin/{i}.bin"])
+

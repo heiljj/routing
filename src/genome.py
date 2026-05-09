@@ -356,18 +356,19 @@ offset_map = {
 
 # TODO make this configurable and clean
 class CF:
-    def __init__(self, valid_tiles: Container[Tile], start_tiles: Collection[Tile] , reference_tile: Tile, ic: IceConfig, avoid_nets: Container[tuple[Tile, str]]=None):
+    def __init__(self, valid_tiles: Container[Tile], start_tiles: Collection[Tile] , reference_tile: Tile, ic: IceConfig, avoid_nets: Container[tuple[Tile, str]]=None, conflicts=None):
         self.valid_tiles = valid_tiles
         self.pin_tiles = start_tiles
         self.reference_tile = reference_tile
         self.avoid_nets = set()
         self.ic = ic
+        self.conflicts = [o[2].conflicts for o in conflicts if o[2]]
 
         for tile, net in avoid_nets:
-            tile_delta = self.reference_tile - tile
 
-            for tile in self.pin_tiles:
+            for pin_tile in self.pin_tiles:
                 try:
+                    tile_delta = pin_tile - tile
                     new_tile = tile + tile_delta
 
                     if 1 <= new_tile.x <= 24 and 1 <= new_tile.y <= 30:
@@ -376,11 +377,15 @@ class CF:
                     print(f"Failed glb net translate: {tile, net} to {new_tile, net}")
 
     def valid(self, tile, option):
+        if option.conflicts in self.conflicts:
+            return False
+
         if isinstance(option, Buffer):
             if "glb" in option.src_net or "glb" in option.dst_net:
                 return False
 
-            if "sp" in option.src_net and "sp" in option.dst_net:
+            # TODO change to and to enable span mutation, currently lets some cross genome connections though
+            if "sp" in option.src_net or "sp" in option.dst_net:
                 return False
 
             # TODO prevent ice40viewer issues, this is an important connection so remove at some point
