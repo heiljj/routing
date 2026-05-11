@@ -194,6 +194,9 @@ class ConfigSetting:
         """Shallow copies ConfigOption structure to avoid having to recompute mutation options."""
         return ConfigSetting(self.options, current=self.current)
 
+    def clear(self):
+        self.current = None
+
 class IceConfig:
     def __init__(self):
         self.icebox = iceconfig()
@@ -297,6 +300,10 @@ class TileConfig:
         new_settings = {k: v.clone() for k, v in self.settings.items()}
         return TileConfig(new_settings)
 
+    def clear(self):
+        for setting in self.settings.values():
+            setting.clear()
+
 class Genome:
     def __init__(self, tiles: dict[tuple[int, int], TileConfig]):
         self.tiles = tiles
@@ -327,6 +334,11 @@ class Genome:
         new_tiles = {k: v.clone() for k, v in self.tiles.items()}
         return Genome(new_tiles)
 
+    def clear(self):
+        for tile in self.tiles.values():
+            tile.clear()
+
+
 class GenomeWriter:
     def __init__(self, tile_to_pin: dict[Tile, int]):
         self.tile_to_pin = tile_to_pin
@@ -342,6 +354,8 @@ class GenomeWriter:
             genome.write(ic, target_tile - reference_tile)
 
         ic.write_file(fpath)
+
+        return out
 
 offset_map = {
     "tnr": (1, 1),
